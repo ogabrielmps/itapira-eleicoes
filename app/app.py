@@ -2,18 +2,22 @@
 Painel: votação de Itapira (Zona 54) por bairro - Eleições 2026, 1º turno.
 
 Rodar:  streamlit run app/app.py
-Dados:  gerados por etl/preparar_dados.py; bairros revisáveis em mapping/bairros.csv
+Dados:  gerados por etl/preparar_dados.py e etl/preparar_2022.py; bairros em mapping/bairros.csv
+IA:     defina ANTHROPIC_API_KEY nos Secrets do Streamlit (ou no ambiente) para as análises em texto
 """
 import hmac
+import os
 from pathlib import Path
 
 import folium
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 from streamlit_folium import st_folium
+
+import insights
 
 ROOT = Path(__file__).resolve().parent.parent
 DADOS = ROOT / "data" / "itapira"
@@ -24,8 +28,6 @@ BRANCO, NULO = 95, 96
 # (azul, laranja "corrige", verde "confirma" - as teclas da urna)
 SERIES = ["#1565d8", "#eb6834", "#1baf7a"]
 OUTROS = "#8a93a6"
-SEQ = ["#dce8fa", "#86b6ef", "#3987e5", "#1559c7", "#0b2557"]
-DIV = [[0, "#e34948"], [0.5, "#eef1f5"], [1, "#1565d8"]]
 
 # identidade visual
 MARINHO, AZUL, AMARELO = "#0b2557", "#1565d8", "#f6b500"
@@ -70,6 +72,13 @@ h3::after {{ content: ""; display: block; width: 56px; height: 5px; margin-top: 
 [data-testid="stTab"][aria-selected="true"] p {{ color: {MARINHO}; }}
 [role="tablist"] .react-aria-SelectionIndicator {{ background-color: {AMARELO} !important; height: 4px; }}
 
+[class*="st-key-insight"] {{ background: #fff; border-radius: 14px; border-left: 6px solid {AMARELO};
+                            padding: 1rem 1.4rem .6rem; box-shadow: 0 2px 12px rgba(11,37,87,.08);
+                            margin: .4rem 0 1.4rem; }}
+[class*="st-key-insight"] .in-insight-titulo {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800;
+                            text-transform: uppercase; font-size: 1.3rem; color: {MARINHO}; }}
+[class*="st-key-insight"] li {{ margin-bottom: .35rem; }}
+
 .in-rodape {{ margin-top: 2.5rem; padding: 1rem 1.25rem; border-radius: 12px; background: {MARINHO};
              color: #cfd9ee; font-size: .85rem; }}
 .in-rodape b {{ color: #fff; }}
@@ -113,25 +122,51 @@ def kpis(itens: list[tuple]):
         for i in itens)
     st.markdown(f'<div class="in-kpis">{cards}</div>', unsafe_allow_html=True)
 
+
+def pc(x):
+    return f"{x:.1f}%".replace(".", ",")
+
+
+def pp(x):
+    return f"{x:+.1f}".replace(".", ",") + " p.p."
+
+
+def num(n):
+    return f"{int(round(n)):,}".replace(",", ".")
+
+
+APELIDOS = {"Luiz Inácio Lula Da Silva": "Lula"}  # quando primeiro + último nome não reconhece
+
+
+def curto(nome: str) -> str:
+    """'Flavio Nantes Bolsonaro' -> 'Flavio Bolsonaro' (rótulos de gráfico)."""
+    if nome.startswith("Legenda") or nome in APELIDOS:
+        return APELIDOS.get(nome, nome)
+    p = nome.split()
+    return nome if len(p) <= 2 else f"{p[0]} {p[-1]}"
+
+
+# (coluna, singular, plural)
 AGRUPAMENTOS = {
-    "Bairro": "BAIRRO",
-    "Região": "REGIAO",
-    "Local de votação": "NM_LOCAL_VOTACAO",
-    "Seção": "NR_SECAO",
+    "Bairro": ("BAIRRO", "bairro", "bairros"),
+    "Local de votação": ("NM_LOCAL_VOTACAO", "local de votação", "locais de votação"),
+    "Seção": ("NR_SECAO", "seção", "seções"),
 }
 
 st.set_page_config(page_title="Itapira 2026 · votos por bairro", page_icon="🗳️", layout="wide")
 
 
-# ---------------------------------------------------------------- acesso
-def senha_configurada():
+# ---------------------------------------------------------------- acesso e IA
+def segredo(nome: str):
     try:
-        return st.secrets.get("senha")
+        return st.secrets.get(nome)
     except FileNotFoundError:  # rodando local sem secrets.toml
         return None
 
 
-SENHA = senha_configurada()
+SENHA = segredo("senha")
+API_KEY = segredo("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+
 if SENHA and not st.session_state.get("autenticado"):
     hero("Acesso restrito", "Painel de votação", "Digite a senha para entrar")
     with st.form("login"):
@@ -143,6 +178,37 @@ if SENHA and not st.session_state.get("autenticado"):
             st.error("Senha incorreta.")
     st.stop()
 
+PENDENTES = []  # (placeholder, future, fatos) preenchidos no fim da página
+
+
+def _render_insight(ph, chave: str, texto: str | None, fatos: list[str], carregando: bool,
+                    final: bool = False):
+    # a chave muda no preenchimento final: o Streamlit não aceita a mesma chave duas vezes por execução
+    with ph.container(key=f"insight_{chave}{'_final' if final else ''}"):
+        st.markdown('<div class="in-insight-titulo">💡 O que os números dizem</div>',
+                    unsafe_allow_html=True)
+        if texto:
+            st.markdown(texto)
+            st.caption("Análise escrita por IA (Claude) a partir dos números desta página. "
+                       "Os valores vêm do TSE; confira nos gráficos abaixo.")
+        else:
+            st.markdown("\n".join(f"- {f}" for f in fatos))
+            st.caption("⏳ Gerando a análise por IA…" if carregando
+                       else "Destaques calculados automaticamente a partir dos dados do TSE.")
+
+
+def bloco_insight(chave: str, titulo: str, fatos: list[str], tabela: pd.DataFrame | None = None):
+    """Mostra os fatos e, se houver chave de API, troca pela análise do Claude quando ficar pronta."""
+    csv = tabela.round(1).to_csv(sep=";") if tabela is not None else ""
+    ph = st.empty()
+    fut = insights.pedir(API_KEY, titulo, fatos, csv)
+    if fut is not None and fut.done():
+        _render_insight(ph, chave, fut.result(), fatos, False)
+    else:
+        _render_insight(ph, chave, None, fatos, fut is not None)
+        if fut is not None:
+            PENDENTES.append((ph, chave, fut, fatos))
+
 
 # ---------------------------------------------------------------- dados
 @st.cache_data
@@ -151,14 +217,12 @@ def carregar():
     secoes = pd.read_csv(DADOS / "secoes.csv")
     mapa = pd.read_csv(MAPPING, encoding="utf-8-sig")
     mapa["BAIRRO"] = mapa["BAIRRO"].fillna(mapa["BAIRRO_TSE"]).str.strip()
-    mapa["REGIAO"] = mapa["REGIAO"].fillna("").astype(str).str.strip()
-    mapa.loc[mapa["REGIAO"] == "", "REGIAO"] = mapa["BAIRRO"]
     # coordenadas também podem ser corrigidas no mapping
     secoes = secoes.drop(columns=["NR_LATITUDE", "NR_LONGITUDE"]).merge(
-        mapa[["NR_LOCAL_VOTACAO", "BAIRRO", "REGIAO", "NR_LATITUDE", "NR_LONGITUDE"]],
+        mapa[["NR_LOCAL_VOTACAO", "BAIRRO", "NR_LATITUDE", "NR_LONGITUDE"]],
         on="NR_LOCAL_VOTACAO", how="left")
     votos = votos.drop(columns=["NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO"]).merge(
-        secoes[["NR_SECAO", "NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO", "BAIRRO", "REGIAO"]],
+        secoes[["NR_SECAO", "NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO", "BAIRRO"]],
         on="NR_SECAO", how="left")
     return votos, secoes
 
@@ -186,21 +250,24 @@ def carregar_perfil():
     return p, soma
 
 
+# nome -> (coluna somada, descrição de "mais" e "menos" para o texto)
 INDICADORES = {
-    "Idade média": "w_idade",
-    "% jovens (16-29)": "jovens",
-    "% idosos (60+)": "idosos",
-    "% mulheres": "mulheres",
-    "% com ensino superior (completo ou não)": "superior",
-    "% até fundamental completo": "fundamental",
-    "% casados": "casados",
+    "Idade média": ("w_idade", "eleitorado mais velho", "eleitorado mais jovem"),
+    "% jovens (16-29)": ("jovens", "mais jovens de 16 a 29 anos", "menos jovens de 16 a 29 anos"),
+    "% idosos (60+)": ("idosos", "mais eleitores com 60 anos ou mais", "menos eleitores com 60+"),
+    "% mulheres": ("mulheres", "mais mulheres", "menos mulheres"),
+    "% com ensino superior (completo ou não)": ("superior", "mais eleitores com ensino superior",
+                                                "menos eleitores com ensino superior"),
+    "% até fundamental completo": ("fundamental", "mais eleitores com até o fundamental",
+                                   "menos eleitores com até o fundamental"),
+    "% casados": ("casados", "mais casados", "menos casados"),
 }
 
 
 def indicadores(soma: pd.DataFrame) -> pd.DataFrame:
     """Converte somas (por seção ou agregadas) em idade média / percentuais."""
     out = pd.DataFrame(index=soma.index)
-    for nome, col in INDICADORES.items():
+    for nome, (col, _, _) in INDICADORES.items():
         f = 1 if nome == "Idade média" else 100
         out[nome] = soma[col] / soma["QT_ELEITORES"] * f
     out["Eleitores"] = soma["QT_ELEITORES"]
@@ -232,6 +299,17 @@ def votos_por_campo(df: pd.DataFrame, grupo: pd.Series) -> pd.DataFrame:
     return (df.assign(CAMPO=campo, GRUPO=df["NR_SECAO"].map(grupo))
               .pivot_table(index="GRUPO", columns="CAMPO", values="QT_VOTOS", aggfunc="sum",
                            fill_value=0))
+
+
+def pct_validos(p):
+    """% de cada campo sobre os votos válidos (Series da cidade ou DataFrame por grupo)."""
+    if isinstance(p, pd.Series):
+        p = p.reindex(list(CAMPOS), fill_value=0)
+        return p / p.sum() * 100
+    p = p.reindex(columns=list(CAMPOS), fill_value=0)
+    return p.div(p.sum(axis=1), axis=0) * 100
+
+
 sem_bairro = votos["BAIRRO"].isna().sum()
 
 # ---------------------------------------------------------------- filtros
@@ -242,7 +320,7 @@ ordem_cargos = ["Presidente", "Governador", "Senador", "Deputado Federal", "Depu
 cargos = [c for c in ordem_cargos if c in votos["DS_CARGO"].unique()]
 cargo = st.sidebar.selectbox("Cargo", cargos)
 nome_grupo = st.sidebar.radio("Agrupar por", list(AGRUPAMENTOS))
-col_grupo = AGRUPAMENTOS[nome_grupo]
+col_grupo, g_sing, g_plur = AGRUPAMENTOS[nome_grupo]
 
 v = votos[votos["DS_CARGO"] == cargo].copy()
 legenda = False
@@ -268,46 +346,77 @@ def cor(c):
     return cor_cand.get(c, OUTROS)
 
 
+# seção -> grupo escolhido (mapeamento de 2026; usado também para 2022)
+grupo_secao = secoes.set_index("NR_SECAO")[col_grupo] if col_grupo != "NR_SECAO" \
+    else secoes.set_index("NR_SECAO").index.to_series()
+if col_grupo == "NR_SECAO":
+    grupo_secao = grupo_secao.map(lambda s: f"Seção {s}")
+validos["GRUPO"] = validos["NR_SECAO"].map(grupo_secao)
+
 # tabela grupo x candidato
-pivot = validos.pivot_table(index=col_grupo, columns="CANDIDATO", values="QT_VOTOS",
+pivot = validos.pivot_table(index="GRUPO", columns="CANDIDATO", values="QT_VOTOS",
                             aggfunc="sum", fill_value=0)
 pivot = pivot[ranking.index]
 pct = pivot.div(pivot.sum(axis=1), axis=0) * 100
 pct_cidade = ranking / total_validos * 100
+n_grupos = len(pivot)
 
 # comparecimento: Governador (1 voto por eleitor, todas as seções)
 votantes = (votos[votos["DS_CARGO"] == "Governador"].groupby("NR_SECAO")["QT_VOTOS"].sum()
             .rename("VOTANTES"))
 sec = secoes.merge(votantes, on="NR_SECAO", how="left").fillna({"VOTANTES": 0})
+sec["GRUPO"] = sec["NR_SECAO"].map(grupo_secao)
+
+NOTA_CARGO = []
+if cargo == "Senador":
+    NOTA_CARGO.append("Para Senador, cada eleitor podia votar em 2 candidatos; os percentuais são "
+                      "sobre o total de votos válidos dados.")
+if col_grupo != "NR_SECAO":
+    NOTA_CARGO.append(f"O {g_sing} é o do local de votação, não o endereço de quem votou.")
 
 # ---------------------------------------------------------------- cabeçalho
-hero(cargo, linha_baixo=f"em Itapira · por {nome_grupo.lower()}")
+hero(cargo, linha_baixo=f"em Itapira · por {g_sing}")
 aptos = int(sec["QT_ELEITOR_SECAO"].sum())
 comp = int(sec["VOTANTES"].sum())
 bn = v[v["TIPO"].isin(["Branco", "Nulo"])]["QT_VOTOS"].sum()
 kpis([
-    ("Eleitores aptos", f"{aptos:,}".replace(",", ".")),
-    ("Comparecimento", f"{comp / aptos:.1%}".replace(".", ",")),
-    ("Votos válidos" + (" (com legenda)" if legenda else ""), f"{total_validos:,}".replace(",", ".")),
-    ("Brancos + nulos", f"{bn / v['QT_VOTOS'].sum():.1%}".replace(".", ",")),
+    ("Eleitores aptos", num(aptos)),
+    ("Comparecimento", pc(comp / aptos * 100)),
+    ("Votos válidos" + (" (com legenda)" if legenda else ""), num(total_validos)),
+    ("Brancos + nulos", pc(bn / v["QT_VOTOS"].sum() * 100)),
 ])
 if sem_bairro:
     st.warning(f"{sem_bairro} linhas de voto sem bairro mapeado - confira mapping/bairros.csv.")
 
-# seção -> grupo escolhido (mapeamento de 2026; usado também para 2022)
-grupo_secao = secoes.set_index("NR_SECAO")[col_grupo] if col_grupo != "NR_SECAO" \
-    else secoes.set_index("NR_SECAO").index.to_series()
-
-aba1, aba2, aba3, aba4, aba6, aba7, aba5 = st.tabs(
-    ["🏆 Quem venceu onde", "👤 Desempenho por candidato", "🔥 Comparativo",
+aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs(
+    ["🏆 Quem venceu onde", "👤 Desempenho por candidato", "⚔️ Confronto",
      "🚶 Comparecimento", "👥 Perfil do eleitorado", "🔁 2022 × 2026", "📄 Dados"])
 
 
-def fmt_pct(x):
-    return f"{x:.1f}%".replace(".", ",")
+def barras_h(serie: pd.Series, cores, texto, hover: str, titulo_x: str, media: float | None = None,
+             rotulo_media: str = "", custom=None, x_range=None):
+    """Barras horizontais ordenadas, com rótulo de valor na ponta e linha da média da cidade."""
+    fig = go.Figure(go.Bar(
+        x=serie.values, y=serie.index.astype(str), orientation="h",
+        marker=dict(color=cores, cornerradius=4), text=texto, textposition="outside",
+        cliponaxis=False, customdata=custom, hovertemplate=hover,
+    ))
+    if media is not None:
+        fig.add_vline(x=media, line_dash="dot", line_color=OUTROS,
+                      annotation_text=rotulo_media, annotation_position="top")
+    fig.update_layout(height=max(380, 24 * len(serie) + 90), margin=dict(l=10, r=60, t=40, b=10),
+                      xaxis_title=titulo_x, yaxis_title=None, bargap=0.25)
+    if not x_range:  # folga nas pontas para os rótulos de texto não serem cortados
+        lo, hi = min(0, serie.min()), max(0, serie.max())
+        maior_rotulo = max((len(str(t)) for t in texto), default=0) if isinstance(texto, list) else 8
+        folga = (hi - lo) * (0.15 + 0.02 * maior_rotulo)
+        x_range = [lo - folga if lo < 0 else 0, hi + folga if hi > 0 else 0]
+    fig.update_xaxes(range=x_range)
+    fig.update_yaxes(type="category")
+    mostrar(fig)
 
 
-# ---------------------------------------------------------------- aba 1
+# ---------------------------------------------------------------- aba 1: vencedores
 with aba1:
     top2 = pd.DataFrame({
         "1º": pct.idxmax(axis=1),
@@ -316,8 +425,28 @@ with aba1:
         "% 2º": pct.apply(lambda r: r.nlargest(2).iloc[-1], axis=1),
         "Votos válidos": pivot.sum(axis=1),
     })
-    top2["Margem (p.p.)"] = top2["% 1º"] - top2["% 2º"]
+    top2["Diferença (p.p.)"] = top2["% 1º"] - top2["% 2º"]
     top2 = top2.sort_values("Votos válidos", ascending=False)
+
+    vit = top2["1º"].value_counts()
+    c1, c2 = ranking.index[0], ranking.index[1]
+    apertado = top2.sort_values("Diferença (p.p.)").iloc[0]
+    folgado = top2.sort_values("Diferença (p.p.)").iloc[-1]
+    fatos = [
+        f"{cargo} em Itapira: {c1} teve {pc(pct_cidade[c1])} dos votos válidos ({num(ranking[c1])} "
+        f"votos); {c2} teve {pc(pct_cidade[c2])} ({num(ranking[c2])}).",
+        "Vitórias por " + g_sing + ": " + "; ".join(f"{c} em {n} de {n_grupos}" for c, n in vit.items()) + ".",
+        f"Disputa mais apertada: {apertado.name} ({apertado['1º']} {pc(apertado['% 1º'])} × "
+        f"{apertado['2º']} {pc(apertado['% 2º'])}, diferença de {pc(apertado['Diferença (p.p.)'])[:-1]} p.p.).",
+        f"Maior vantagem: {folgado.name} ({folgado['1º']} {pc(folgado['% 1º'])} × "
+        f"{folgado['2º']} {pc(folgado['% 2º'])}).",
+    ]
+    if len(ranking) > 2:
+        fatos.append("Demais mais votados na cidade: " + "; ".join(
+            f"{c} {pc(pct_cidade[c])}" for c in ranking.index[2:6]) + ".")
+    bloco_insight(f"venc_{cargo}_{col_grupo}_{legenda}", f"{cargo}: quem venceu em cada {g_sing}",
+                  fatos + NOTA_CARGO,
+                  top2.drop(columns="Votos válidos").head(30) if n_grupos <= 30 else None)
 
     c_mapa, c_tab = st.columns([1, 1])
     with c_mapa:
@@ -347,314 +476,296 @@ with aba1:
                 fill_opacity=0.85, tooltip=html,
             ).add_to(m)
         st_folium(m, height=460, use_container_width=True, returned_objects=[])
-        st.caption("Cor = candidato mais votado no local · tamanho = votos válidos · "
+        st.caption("Cada círculo é um local de votação. Cor = quem foi mais votado ali · "
+                   "tamanho = quantidade de votos · "
                    + " · ".join(f"<span style='color:{c}'>●</span> {n}" for n, c in cor_cand.items())
                    + f" · <span style='color:{OUTROS}'>●</span> outros", unsafe_allow_html=True)
     with c_tab:
-        st.subheader(f"1º e 2º colocados por {nome_grupo.lower()}")
+        st.subheader(f"1º e 2º colocados por {g_sing}")
         st.dataframe(
-            top2.style.format({"% 1º": fmt_pct, "% 2º": fmt_pct, "Margem (p.p.)": "{:.1f}",
-                               "Votos válidos": "{:,.0f}"}),
+            top2.rename_axis(nome_grupo).style.format(
+                {"% 1º": pc, "% 2º": pc, "Diferença (p.p.)": "{:.1f}", "Votos válidos": "{:,.0f}"}),
             height=460, width="stretch")
 
-    st.subheader("Vitórias por candidato")
-    vit = top2["1º"].value_counts().rename_axis("Candidato").reset_index(name=nome_grupo + "s vencidos")
-    st.dataframe(vit, hide_index=True)
-
-# ---------------------------------------------------------------- aba 2
+# ---------------------------------------------------------------- aba 2: candidato
 with aba2:
     cand = st.selectbox("Candidato", ranking.index,
-                        format_func=lambda c: f"{c} - {ranking[c]:,} votos ({pct_cidade[c]:.1f}%)")
-    serie = pd.DataFrame({
-        "Votos": pivot[cand],
-        "%": pct[cand],
-    })
-    serie["Índice vs cidade"] = serie["%"] / pct_cidade[cand] * 100
+                        format_func=lambda c: f"{c} - {num(ranking[c])} votos ({pc(pct_cidade[c])})")
+    serie = pd.DataFrame({"Votos": pivot[cand], "%": pct[cand]})
+    serie["Diferença para a média (p.p.)"] = serie["%"] - pct_cidade[cand]
     serie = serie.sort_values("%")
+    acima = (serie["Diferença para a média (p.p.)"] > 0).sum()
+    melhores, piores = serie.iloc[::-1].head(3), serie.head(3)
+    posicao = list(ranking.index).index(cand) + 1
+    fatos = [
+        f"{cand} ficou em {posicao}º lugar na cidade, com {pc(pct_cidade[cand])} dos votos válidos "
+        f"({num(ranking[cand])} votos).",
+        f"Ficou acima da própria média da cidade em {acima} de {n_grupos} {g_plur}.",
+        "Melhores resultados: " + "; ".join(f"{g} {pc(r['%'])}" for g, r in melhores.iterrows()) + ".",
+        "Piores resultados: " + "; ".join(f"{g} {pc(r['%'])}" for g, r in piores.iterrows()) + ".",
+        f"Distância entre o melhor e o pior {g_sing}: {pc(melhores['%'].iloc[0] - piores['%'].iloc[0])[:-1]} p.p.",
+    ]
+    bloco_insight(f"cand_{cargo}_{col_grupo}_{legenda}_{cand}", f"{cargo}: desempenho de {cand}",
+                  fatos + NOTA_CARGO)
 
-    fig = go.Figure(go.Bar(
-        x=serie["%"], y=serie.index.astype(str), orientation="h",
-        marker=dict(color=cor(cand), cornerradius=4),
-        customdata=serie[["Votos", "Índice vs cidade"]],
-        hovertemplate="<b>%{y}</b><br>%{x:.1f}% dos válidos<br>%{customdata[0]:,} votos"
-                      "<br>índice %{customdata[1]:.0f}<extra></extra>",
-    ))
-    fig.add_vline(x=pct_cidade[cand], line_dash="dot", line_color=OUTROS,
-                  annotation_text=f"média da cidade {pct_cidade[cand]:.1f}%",
-                  annotation_position="top")
-    fig.update_layout(height=max(380, 22 * len(serie) + 80), margin=dict(l=10, r=20, t=40, b=10),
-                      xaxis_title="% dos votos válidos", yaxis_title=None, bargap=0.25)
-    mostrar(fig)
-    st.caption("Índice = % no grupo ÷ % na cidade × 100. Acima de 100 = desempenho acima da média.")
-    st.dataframe(serie.sort_values("%", ascending=False)
-                 .style.format({"%": fmt_pct, "Índice vs cidade": "{:.0f}", "Votos": "{:,.0f}"}),
-                 width="stretch")
+    st.subheader(f"{curto(cand)} em cada {g_sing}")
+    barras_h(serie["%"], cor(cand), [pc(x) for x in serie["%"]],
+             "<b>%{y}</b><br>%{x:.1f}% dos válidos<br>%{customdata[0]:,} votos<extra></extra>",
+             "% dos votos válidos", pct_cidade[cand], f"média da cidade {pc(pct_cidade[cand])}",
+             custom=serie[["Votos"]])
+    st.caption("Barras à direita da linha pontilhada = o candidato foi melhor ali do que na cidade "
+               "como um todo.")
+    with st.expander("Ver tabela"):
+        st.dataframe(serie.sort_values("%", ascending=False).rename_axis(nome_grupo)
+                     .style.format({"%": pc, "Diferença para a média (p.p.)": "{:+.1f}",
+                                    "Votos": "{:,.0f}"}), width="stretch")
 
-# ---------------------------------------------------------------- aba 3
+# ---------------------------------------------------------------- aba 3: confronto
 with aba3:
-    n = st.slider("Quantos candidatos (ranking da cidade)", 3, min(25, len(ranking)),
-                  min(10, len(ranking)))
-    modo = st.radio("Mostrar", ["% dos válidos", "Índice vs média da cidade"], horizontal=True)
-    cols = ranking.index[:n]
-    ordem = pivot.sum(axis=1).sort_values(ascending=False).index
-    if modo == "% dos válidos":
-        z = pct.loc[ordem, cols]
-        escala, meio, fmt = SEQ, None, ".1f"
+    if len(ranking) < 2:
+        st.info("Este cargo tem só um candidato.")
     else:
-        z = pct.loc[ordem, cols].div(pct_cidade[cols]) * 100
-        escala, meio, fmt = DIV, 100, ".0f"
-    fig = px.imshow(z, color_continuous_scale=escala, color_continuous_midpoint=meio,
-                    text_auto=fmt, aspect="auto")
-    fig.update_traces(xgap=2, ygap=2,
-                      hovertemplate="<b>%{y}</b><br>%{x}<br>%{z:.1f}<extra></extra>")
-    fig.update_layout(height=max(400, 26 * len(z) + 140), margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis_title=None, yaxis_title=None, xaxis_side="top")
-    fig.update_yaxes(type="category")
-    mostrar(fig)
-    if modo != "% dos válidos":
-        st.caption("Azul = acima da média do candidato na cidade · vermelho = abaixo · cinza = na média.")
+        ca, cb = st.columns(2)
+        a = ca.selectbox("Candidato A", ranking.index, index=0, key="conf_a")
+        b = cb.selectbox("Candidato B", [c for c in ranking.index if c != a], index=0, key="conf_b")
+        cor_a = cor(a) if cor(a) != OUTROS else SERIES[0]
+        cor_b = cor(b) if cor(b) not in (OUTROS, cor_a) else next(c for c in SERIES if c != cor_a)
 
-# ---------------------------------------------------------------- aba 4
+        dif = (pct[a] - pct[b]).sort_values()
+        frente_a, frente_b = (dif > 0).sum(), (dif < 0).sum()
+        kpis([
+            (curto(a), pc(pct_cidade[a]), f"{num(ranking[a])} votos"),
+            (curto(b), pc(pct_cidade[b]), f"{num(ranking[b])} votos"),
+            (f"{g_plur} com {curto(a)} à frente", f"{frente_a} de {n_grupos}"),
+            (f"{g_plur} com {curto(b)} à frente", f"{frente_b} de {n_grupos}"),
+        ])
+        fatos = [
+            f"Na cidade: {a} {pc(pct_cidade[a])} × {b} {pc(pct_cidade[b])} "
+            f"(diferença de {pc(abs(pct_cidade[a] - pct_cidade[b]))[:-1]} p.p.).",
+            f"{a} ficou à frente de {b} em {frente_a} de {n_grupos} {g_plur}; {b} à frente em {frente_b}.",
+            f"Maiores vantagens de {a} sobre {b}: " + "; ".join(
+                f"{g} ({pp(x)})" for g, x in dif.iloc[::-1].head(3).items()) + ".",
+            f"Menores vantagens de {a} sobre {b} (negativo = {b} à frente): " + "; ".join(
+                f"{g} ({pp(x)})" for g, x in dif.head(3).items()) + ".",
+        ]
+        bloco_insight(f"conf_{cargo}_{col_grupo}_{legenda}_{a}_{b}", f"{cargo}: {a} × {b}",
+                      fatos + NOTA_CARGO)
+
+        st.subheader(f"Vantagem em cada {g_sing}")
+        rot = [f"{curto(a) if x > 0 else curto(b)} +" + f"{abs(x):.1f}".replace(".", ",") for x in dif]
+        barras_h(dif, [cor_a if x > 0 else cor_b for x in dif], rot,
+                 "<b>%{y}</b><br>" + curto(a) + ": %{customdata[0]:.1f}%<br>" + curto(b)
+                 + ": %{customdata[1]:.1f}%<extra></extra>",
+                 f"pontos percentuais (← {curto(b)} à frente · {curto(a)} à frente →)",
+                 0, "", custom=np.c_[pct[a].reindex(dif.index), pct[b].reindex(dif.index)])
+        st.markdown(f"<span style='color:{cor_a}'>●</span> **{curto(a)}** à frente &nbsp;&nbsp; "
+                    f"<span style='color:{cor_b}'>●</span> **{curto(b)}** à frente · "
+                    "o número é a diferença entre os dois, em pontos percentuais.",
+                    unsafe_allow_html=True)
+
+# ---------------------------------------------------------------- aba 4: comparecimento
 with aba4:
-    g = sec.groupby(col_grupo)[["QT_ELEITOR_SECAO", "VOTANTES"]].sum()
+    g = sec.groupby("GRUPO")[["QT_ELEITOR_SECAO", "VOTANTES"]].sum()
     g["Comparecimento"] = g["VOTANTES"] / g["QT_ELEITOR_SECAO"] * 100
     g = g.sort_values("Comparecimento")
     media = comp / aptos * 100
-    fig = go.Figure(go.Bar(
-        x=g["Comparecimento"], y=g.index.astype(str), orientation="h",
-        marker=dict(color=SERIES[0], cornerradius=4),
-        customdata=g[["VOTANTES", "QT_ELEITOR_SECAO"]],
-        hovertemplate="<b>%{y}</b><br>%{x:.1f}%<br>%{customdata[0]:,} de %{customdata[1]:,}"
-                      " eleitores<extra></extra>",
-    ))
-    fig.add_vline(x=media, line_dash="dot", line_color=OUTROS,
-                  annotation_text=f"cidade {media:.1f}%", annotation_position="top")
-    fig.update_layout(height=max(380, 22 * len(g) + 80), margin=dict(l=10, r=20, t=40, b=10),
-                      xaxis_title="% de comparecimento", xaxis_range=[50, 100], bargap=0.25)
-    mostrar(fig)
-    st.caption("Comparecimento = votos para Governador ÷ eleitores aptos da seção. "
-               "Eleitores em trânsito podem distorcer levemente algumas seções.")
+    fatos = [
+        f"Comparecimento na cidade: {pc(media)} ({num(comp)} de {num(aptos)} eleitores aptos); "
+        f"abstenção de {pc(100 - media)}.",
+        "Maior comparecimento: " + "; ".join(f"{i} {pc(r['Comparecimento'])}"
+                                            for i, r in g.iloc[::-1].head(3).iterrows()) + ".",
+        "Menor comparecimento: " + "; ".join(f"{i} {pc(r['Comparecimento'])}"
+                                            for i, r in g.head(3).iterrows()) + ".",
+        "Comparecimento calculado pelos votos para Governador; eleitores em trânsito podem "
+        "distorcer levemente algumas seções.",
+    ]
+    bloco_insight(f"comp_{col_grupo}", f"Comparecimento por {g_sing}", fatos)
+    st.subheader(f"Comparecimento por {g_sing}")
+    barras_h(g["Comparecimento"], SERIES[0], [pc(x) for x in g["Comparecimento"]],
+             "<b>%{y}</b><br>%{x:.1f}%<br>%{customdata[0]:,} de %{customdata[1]:,} eleitores"
+             "<extra></extra>", "% dos eleitores aptos que votaram", media, f"cidade {pc(media)}",
+             custom=g[["VOTANTES", "QT_ELEITOR_SECAO"]], x_range=[50, 100])
 
-# ---------------------------------------------------------------- aba 6
-with aba6:
-    st.info("O perfil é dos **eleitores aptos** de cada seção (cadastro do TSE, jul/2026), não de quem "
-            "compareceu. As relações abaixo são entre **seções**, não entre pessoas: mostram onde o "
-            "candidato foi melhor, não provam como cada grupo votou.", icon="ℹ️")
-
-    # ---- perfil por grupo
-    st.subheader(f"Perfil por {nome_grupo.lower()}")
+# ---------------------------------------------------------------- aba 5: perfil
+with aba5:
     tab_perfil = indicadores(perfil_secao.groupby(grupo_secao).sum())
     cidade = indicadores(perfil_secao.sum().to_frame().T).iloc[0]
-    ind = st.selectbox("Indicador", list(INDICADORES), key="ind_grupo")
-    g = tab_perfil.sort_values(ind)
-    fig = go.Figure(go.Bar(
-        x=g[ind], y=g.index.astype(str), orientation="h",
-        marker=dict(color=SERIES[0], cornerradius=4),
-        customdata=g[["Eleitores"]],
-        hovertemplate="<b>%{y}</b><br>%{x:.1f}<br>%{customdata[0]:,} eleitores<extra></extra>",
-    ))
-    fig.add_vline(x=cidade[ind], line_dash="dot", line_color=OUTROS,
-                  annotation_text=f"cidade {cidade[ind]:.1f}", annotation_position="top")
-    fig.update_layout(height=max(380, 22 * len(g) + 80), margin=dict(l=10, r=20, t=40, b=10),
-                      xaxis_title=ind, yaxis_title=None, bargap=0.25)
-    fig.update_yaxes(type="category")
-    mostrar(fig)
-    with st.expander("Tabela com todos os indicadores"):
-        st.dataframe(tab_perfil.sort_values("Eleitores", ascending=False)
-                     .style.format("{:.1f}").format("{:,.0f}", subset=["Eleitores"]),
-                     width="stretch")
-
-    # ---- distribuição de idade: grupo vs cidade
-    st.subheader("Distribuição de idade")
-    escolha = st.selectbox(nome_grupo, tab_perfil.sort_values("Eleitores", ascending=False).index,
-                           key="grupo_idade")
-    faixas = [16, 25, 35, 45, 55, 65, 75, 200]
-    rot = ["16-24", "25-34", "35-44", "45-54", "55-64", "65-74", "75+"]
-    pf = perfil.assign(GRUPO=perfil["NR_SECAO"].map(grupo_secao),
-                       FAIXA=pd.cut(perfil["IDADE"], faixas, right=False, labels=rot))
-    dist_g = pf[pf["GRUPO"] == escolha].groupby("FAIXA", observed=False)["QT_ELEITORES"].sum()
-    dist_c = pf.groupby("FAIXA", observed=False)["QT_ELEITORES"].sum()
-    fig = go.Figure([
-        go.Bar(name=str(escolha), x=rot, y=dist_g / dist_g.sum() * 100,
-               marker=dict(color=SERIES[0], cornerradius=4),
-               hovertemplate="%{x}: %{y:.1f}%<extra>" + str(escolha) + "</extra>"),
-        go.Bar(name="Cidade", x=rot, y=dist_c / dist_c.sum() * 100,
-               marker=dict(color=OUTROS, cornerradius=4),
-               hovertemplate="%{x}: %{y:.1f}%<extra>Cidade</extra>"),
-    ])
-    fig.update_layout(barmode="group", height=340, margin=dict(l=10, r=10, t=30, b=10),
-                      yaxis_title="% dos eleitores", bargap=0.25, bargroupgap=0.08,
-                      legend=dict(orientation="h", y=1.12, x=0))
-    mostrar(fig)
-
-    # ---- voto x perfil (por seção)
-    st.subheader(f"{cargo}: voto × perfil, seção a seção")
+    ind_secao = indicadores(perfil_secao)
     votos_secao = validos.pivot_table(index="NR_SECAO", columns="CANDIDATO", values="QT_VOTOS",
                                       aggfunc="sum", fill_value=0)
-    pct_secao = votos_secao.div(votos_secao.sum(axis=1), axis=0) * 100
-    ind_secao = indicadores(perfil_secao)
+    top_c = list(ranking.index[:3])
 
-    n_top = min(8, len(ranking))
-    corr = pd.DataFrame({
-        i: [pct_secao[c].corr(ind_secao[i]) for c in ranking.index[:n_top]] for i in INDICADORES
-    }, index=ranking.index[:n_top])
-    fig = px.imshow(corr, color_continuous_scale=DIV, zmin=-1, zmax=1, text_auto=".2f",
-                    aspect="auto")
-    fig.update_traces(xgap=2, ygap=2,
-                      hovertemplate="<b>%{y}</b><br>%{x}<br>correlação %{z:.2f}<extra></extra>")
-    fig.update_layout(height=120 + 34 * n_top, margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis_title=None, yaxis_title=None, xaxis_side="top")
-    mostrar(fig)
-    st.caption("Correlação entre o % do candidato na seção e o indicador (161 seções). "
-               "Azul = vai melhor onde o indicador é mais alto · vermelho = vai pior · "
-               "|r| < 0,3 fraca, 0,3–0,5 moderada, > 0,5 forte.")
+    def tercos(ind: str) -> tuple[pd.DataFrame, list[str]]:
+        """Divide as seções em 3 grupos iguais pelo indicador e soma os votos de cada grupo."""
+        s = ind_secao[ind].reindex(votos_secao.index).dropna()
+        t = pd.qcut(s.rank(method="first"), 3, labels=[0, 1, 2])
+        soma = votos_secao.loc[s.index].groupby(t, observed=True).sum()
+        res = soma[top_c].div(soma.sum(axis=1), axis=0) * 100
+        faixa = s.groupby(t, observed=True).agg(["min", "max"])
+        un = " anos" if ind == "Idade média" else "%"
+        rot = [f"{f:.0f} a {m:.0f}{un}".replace(".", ",") for f, m in faixa.values]
+        return res, rot
 
-    c1, c2 = st.columns(2)
-    cand_p = c1.selectbox("Candidato", ranking.index[:max(n_top, 15)], key="cand_perfil")
-    ind_p = c2.selectbox("Indicador", list(INDICADORES), key="ind_perfil")
-    d = ind_secao[[ind_p]].join(pct_secao[cand_p].rename("pct"), how="inner").join(
-        secoes.set_index("NR_SECAO")[["NM_LOCAL_VOTACAO", "BAIRRO"]])
-    r = d[ind_p].corr(d["pct"])
-    a, b = np.polyfit(d[ind_p], d["pct"], 1)
-    xs = np.linspace(d[ind_p].min(), d[ind_p].max(), 50)
-    fig = go.Figure([
-        go.Scatter(x=d[ind_p], y=d["pct"], mode="markers", name="Seção",
-                   marker=dict(size=9, color=cor(cand_p), opacity=0.8,
-                               line=dict(width=1.5, color="#ffffff")),
-                   customdata=np.c_[d.index, d["NM_LOCAL_VOTACAO"], d["BAIRRO"]],
-                   hovertemplate="<b>Seção %{customdata[0]}</b> · %{customdata[2]}<br>"
-                                 "%{customdata[1]}<br>" + ind_p + ": %{x:.1f}<br>"
-                                 + cand_p + ": %{y:.1f}%<extra></extra>"),
-        go.Scatter(x=xs, y=a * xs + b, mode="lines", name="Tendência",
-                   line=dict(color=OUTROS, width=2, dash="dot"), hoverinfo="skip"),
-    ])
-    fig.update_layout(height=440, margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
-                      xaxis_title=ind_p, yaxis_title=f"% de {cand_p} nos válidos")
-    mostrar(fig)
-    forca = "fraca" if abs(r) < 0.3 else "moderada" if abs(r) < 0.5 else "forte"
-    unidade = "ano" if ind_p == "Idade média" else "ponto percentual"
-    br = lambda x: f"{x:+.2f}".replace(".", ",")
-    st.markdown(f"Correlação **{br(r)}** ({forca}). Em média, cada **+1 {unidade}** em "
-                f"*{ind_p.lower()}* acompanha **{br(a)} p.p.** para {cand_p}.")
+    fatos = [
+        f"Eleitorado de Itapira (aptos): idade média de {cidade['Idade média']:.0f} anos, "
+        f"{pc(cidade['% idosos (60+)'])} com 60 anos ou mais, {pc(cidade['% jovens (16-29)'])} "
+        f"entre 16 e 29, {pc(cidade['% mulheres'])} mulheres, {pc(cidade['% com ensino superior (completo ou não)'])} "
+        "com ensino superior (completo ou não).",
+    ]
+    if col_grupo != "NR_SECAO":
+        velho, novo = tab_perfil["Idade média"].idxmax(), tab_perfil["Idade média"].idxmin()
+        esc = tab_perfil["% com ensino superior (completo ou não)"]
+        fatos.append(f"{g_sing.capitalize()} com eleitorado mais velho: {velho} "
+                     f"({tab_perfil.loc[velho, 'Idade média']:.0f} anos em média); mais jovem: {novo} "
+                     f"({tab_perfil.loc[novo, 'Idade média']:.0f} anos).")
+        fatos.append(f"Maior fatia com ensino superior: {esc.idxmax()} ({pc(esc.max())}); "
+                     f"menor: {esc.idxmin()} ({pc(esc.min())}).")
+    for ind in ["Idade média", "% com ensino superior (completo ou não)", "% mulheres"]:
+        res, rot = tercos(ind)
+        _, mais, menos = INDICADORES[ind]
+        partes = [f"{c} {pc(res.loc[2, c])} contra {pc(res.loc[0, c])}" for c in top_c]
+        fatos.append(f"{cargo} - seções com {mais} (terço com {rot[2]}) × seções com {menos} "
+                     f"(terço com {rot[0]}): " + "; ".join(partes) + ".")
+    fatos.append("Limitação: o perfil é dos eleitores aptos de cada seção, não de quem votou, e a "
+                 "comparação é entre seções, não entre pessoas; não mostra como cada grupo votou.")
+    bloco_insight(f"perfil_{cargo}_{col_grupo}_{legenda}", f"{cargo}: voto e perfil do eleitorado",
+                  fatos + NOTA_CARGO)
 
-# ---------------------------------------------------------------- aba 7
-with aba7:
+    st.subheader("Quem vai melhor onde")
+    ind_t = st.selectbox("Comparar seções por", list(INDICADORES), key="ind_tercos")
+    res, rot = tercos(ind_t)
+    _, mais, menos = INDICADORES[ind_t]
+    # um painel por candidato, cada um com a própria escala: diferenças de 2-3 p.p. ficam visíveis
+    fig = make_subplots(rows=1, cols=len(top_c), subplot_titles=[curto(c) for c in top_c],
+                        horizontal_spacing=0.08)
+    for i, c in enumerate(top_c, start=1):
+        y = res[c].values
+        folga = max(1.5, (y.max() - y.min()) * 0.6)
+        fig.add_trace(go.Scatter(
+            x=rot, y=y, mode="lines+markers+text", line=dict(color=cor(c), width=2),
+            marker=dict(size=10, color=cor(c), line=dict(width=2, color="#ffffff")),
+            text=[pc(x) for x in y], textposition="top center", cliponaxis=False,
+            hovertemplate=curto(c) + " · %{x}: %{y:.1f}%<extra></extra>", showlegend=False,
+        ), row=1, col=i)
+        fig.update_yaxes(range=[y.min() - folga, y.max() + folga], ticksuffix="%", row=1, col=i)
+    fig.update_xaxes(type="category")
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(fig, width="stretch")
+    st.caption(f"As 161 seções foram divididas em três grupos do mesmo tamanho pela "
+               f"{ind_t.lower()}: da esquerda (seções com {menos}) para a direita (seções com {mais}). "
+               "Cada ponto é quanto o candidato teve somando as seções do grupo. Linha subindo = o "
+               "candidato vai melhor onde o indicador é mais alto. Atenção: cada painel tem a sua "
+               "própria escala, e a comparação é entre seções, não entre pessoas.")
+
+    if col_grupo != "NR_SECAO":
+        st.subheader(f"Perfil por {g_sing}")
+        ind = st.selectbox("Indicador", list(INDICADORES), key="ind_grupo")
+        gp = tab_perfil[ind].sort_values()
+        fmt = (lambda x: f"{x:.0f} anos") if ind == "Idade média" else pc
+        barras_h(gp, SERIES[0], [fmt(x) for x in gp], "<b>%{y}</b><br>%{x:.1f}<extra></extra>",
+                 ind, cidade[ind], f"cidade {fmt(cidade[ind])}")
+        with st.expander("Tabela com todos os indicadores"):
+            st.dataframe(tab_perfil.sort_values("Eleitores", ascending=False).rename_axis(nome_grupo)
+                         .style.format("{:.1f}").format("{:,.0f}", subset=["Eleitores"]),
+                         width="stretch")
+
+# ---------------------------------------------------------------- aba 6: 2022 x 2026
+with aba6:
     if v22 is None:
         st.warning("Dados de 2022 não encontrados. Rode `python etl/preparar_2022.py`.")
     else:
-        st.info("Esta aba compara sempre **Presidente**, qualquer que seja o cargo na barra lateral. "
-                "As seções são comparadas pelo número: os mesmos eleitores, em grande parte. As 9 seções "
-                "que votavam no IESI em 2022 foram para a ETEC e aqui contam no grupo de 2026. A seção 161 "
-                "é nova e não tem dados de 2022.", icon="ℹ️")
         turno = st.radio("Comparar 2026 com", ["1º turno de 2022", "2º turno de 2022"],
                          horizontal=True)
         t = 1 if turno.startswith("1") else 2
 
-        p22 = votos_por_campo(v22[v22["NR_TURNO"] == t], grupo_secao)
-        p26 = votos_por_campo(votos[votos["CD_CARGO"] == 1], grupo_secao)
-        cid = pd.Series("Itapira", index=grupo_secao.index)
+        g22 = pct_validos(votos_por_campo(v22[v22["NR_TURNO"] == t], grupo_secao))
+        g26 = pct_validos(votos_por_campo(votos[votos["CD_CARGO"] == 1], grupo_secao))
+        cid = pd.Series("Itapira", index=secoes["NR_SECAO"])
         c22 = votos_por_campo(v22[v22["NR_TURNO"] == t], cid).iloc[0]
         c26 = votos_por_campo(votos[votos["CD_CARGO"] == 1], cid).iloc[0]
-
-        def pct_validos(p):
-            if isinstance(p, pd.Series):
-                p = p.reindex(list(CAMPOS), fill_value=0)
-                return p / p.sum() * 100
-            p = p.reindex(columns=list(CAMPOS), fill_value=0)
-            return p.div(p.sum(axis=1), axis=0) * 100
-
-        g22, g26 = pct_validos(p22), pct_validos(p26)
         k22, k26 = pct_validos(c22), pct_validos(c26)
-
-        aptos22 = secoes_22.set_index("NR_SECAO")["QT_ELEITOR_SECAO"]
-        comp22 = c22.sum() / aptos22[aptos22.index.isin(grupo_secao.index)].sum() * 100
+        aptos22 = secoes_22["QT_ELEITOR_SECAO"].sum()
+        comp22 = c22.sum() / secoes_22.set_index("NR_SECAO")["QT_ELEITOR_SECAO"] \
+            .reindex(secoes["NR_SECAO"]).sum() * 100
         comp26 = c26.sum() / aptos * 100
 
-        def pp(x):
-            return f"{x:+.1f}".replace(".", ",") + " p.p."
-
-        def pc(x):
-            return f"{x:.1f}%".replace(".", ",")
-
         kpis([
-            ("Bolsonaro (22)", pc(k26["Bolsonaro (22)"]),
-             f"2022: {pc(k22['Bolsonaro (22)'])} · {pp(k26['Bolsonaro (22)'] - k22['Bolsonaro (22)'])}"),
-            ("Lula (13)", pc(k26["Lula (13)"]),
-             f"2022: {pc(k22['Lula (13)'])} · {pp(k26['Lula (13)'] - k22['Lula (13)'])}"),
-            ("Comparecimento", pc(comp26), f"2022: {pc(comp22)} · {pp(comp26 - comp22)}"),
-            ("Eleitores aptos", f"{aptos:,}".replace(",", "."),
-             f"2022: {secoes_22['QT_ELEITOR_SECAO'].sum():,}".replace(",", ".")),
+            ("Bolsonaro (22)", f"{pc(k22['Bolsonaro (22)'])} → {pc(k26['Bolsonaro (22)'])}",
+             f"{pp(k26['Bolsonaro (22)'] - k22['Bolsonaro (22)'])} · Jair em 2022, Flávio em 2026"),
+            ("Lula (13)", f"{pc(k22['Lula (13)'])} → {pc(k26['Lula (13)'])}",
+             pp(k26["Lula (13)"] - k22["Lula (13)"])),
+            ("Comparecimento", f"{pc(comp22)} → {pc(comp26)}", pp(comp26 - comp22)),
+            ("Eleitores aptos", f"{num(aptos22)} → {num(aptos)}", f"{num(aptos - aptos22)} eleitores"),
         ])
-        st.caption("Percentuais sobre votos válidos. Bolsonaro (22) = Jair em 2022 e Flávio em 2026.")
 
-        # ---- halteres: 2022 -> 2026 por grupo
-        st.subheader(f"De 2022 para 2026 por {nome_grupo.lower()}")
-        campo = st.radio("Campo", list(CAMPOS), horizontal=True, key="campo_2022")
-        d = pd.DataFrame({"2022": g22[campo], "2026": g26[campo]}).dropna()
-        d["Δ"] = d["2026"] - d["2022"]
-        d = d.sort_values("Δ")
-        y = d.index.astype(str)
-        fig = go.Figure()
-        for yi, a0, a1 in zip(y, d["2022"], d["2026"]):
-            fig.add_shape(type="line", x0=a0, x1=a1, y0=yi, y1=yi, layer="below",
-                          line=dict(color="#c5cfdf", width=3))
-        fig.add_trace(go.Scatter(
-            x=d["2022"], y=y, mode="markers", name="2022",
-            marker=dict(size=11, color="#ffffff", line=dict(width=2.5, color=OUTROS)),
-            hovertemplate="<b>%{y}</b><br>2022: %{x:.1f}%<extra></extra>"))
-        fig.add_trace(go.Scatter(
-            x=d["2026"], y=y, mode="markers", name="2026",
-            marker=dict(size=12, color=CAMPOS[campo], line=dict(width=2, color="#ffffff")),
-            customdata=d[["Δ"]],
-            hovertemplate="<b>%{y}</b><br>2026: %{x:.1f}%<br>variação %{customdata[0]:+.1f} p.p."
-                          "<extra></extra>"))
-        fig.update_layout(height=max(380, 24 * len(d) + 90), margin=dict(l=10, r=20, t=30, b=10),
-                          xaxis_title=f"% de {campo} nos válidos", yaxis_title=None,
-                          legend=dict(orientation="h", y=1.06, x=0))
-        fig.update_yaxes(type="category")
-        mostrar(fig)
+        delta = (g26 - g22).dropna()
+        tabela = pd.DataFrame({
+            "22 em 2022": g22["Bolsonaro (22)"], "22 em 2026": g26["Bolsonaro (22)"],
+            "Variação 22": delta["Bolsonaro (22)"],
+            "13 em 2022": g22["Lula (13)"], "13 em 2026": g26["Lula (13)"],
+            "Variação 13": delta["Lula (13)"],
+        }).dropna().sort_values("Variação 22", ascending=False)
 
-        # ---- mudança na margem 22 - 13
-        st.subheader("Para que lado cada um se moveu")
-        m22 = g22["Bolsonaro (22)"] - g22["Lula (13)"]
-        m26 = g26["Bolsonaro (22)"] - g26["Lula (13)"]
-        dm = (m26 - m22).dropna().sort_values()
-        fig = go.Figure(go.Bar(
-            x=dm, y=dm.index.astype(str), orientation="h",
-            marker=dict(color=[CAMPOS["Bolsonaro (22)"] if x > 0 else CAMPOS["Lula (13)"] for x in dm],
-                        cornerradius=4),
-            customdata=np.c_[m22.reindex(dm.index), m26.reindex(dm.index)],
-            hovertemplate="<b>%{y}</b><br>margem 2022: %{customdata[0]:+.1f} p.p.<br>"
-                          "margem 2026: %{customdata[1]:+.1f} p.p.<br>variação %{x:+.1f} p.p."
-                          "<extra></extra>"))
-        fig.add_vline(x=0, line_color=OUTROS, line_width=1)
-        fig.update_layout(height=max(380, 22 * len(dm) + 80), margin=dict(l=10, r=20, t=10, b=10),
-                          xaxis_title="variação da margem 22 − 13 (p.p.)", yaxis_title=None,
-                          bargap=0.25)
-        fig.update_yaxes(type="category")
-        mostrar(fig)
-        st.caption(f"Margem = % do 22 − % do 13. Barras **azuis**: a vantagem do 22 aumentou (ou a do 13 "
-                   f"diminuiu). Barras **laranjas**: o 13 ganhou terreno. Na cidade: "
-                   f"{pp(k22['Bolsonaro (22)'] - k22['Lula (13)'])} em 2022 → "
-                   f"{pp(k26['Bolsonaro (22)'] - k26['Lula (13)'])} em 2026.")
+        d22, d13 = tabela["Variação 22"], tabela["Variação 13"]
+        fatos = [
+            f"Presidente, {turno} × 1º turno de 2026. Número 22: Jair Bolsonaro em 2022 e Flávio "
+            f"Bolsonaro em 2026; número 13: Lula nos dois anos.",
+            f"Na cidade, o 22 foi de {pc(k22['Bolsonaro (22)'])} para {pc(k26['Bolsonaro (22)'])} "
+            f"({pp(k26['Bolsonaro (22)'] - k22['Bolsonaro (22)'])}); o 13 foi de {pc(k22['Lula (13)'])} "
+            f"para {pc(k26['Lula (13)'])} ({pp(k26['Lula (13)'] - k22['Lula (13)'])}).",
+            f"O 22 cresceu em {(d22 > 0).sum()} de {len(d22)} {g_plur}; o 13 cresceu em "
+            f"{(d13 > 0).sum()} de {len(d13)}.",
+            "Maior crescimento do 22: " + "; ".join(f"{i} ({pp(x)})" for i, x in d22.head(3).items()) + ".",
+            "Menor variação do 22: " + "; ".join(f"{i} ({pp(x)})" for i, x in d22.tail(3).items()) + ".",
+            "Maior queda do 13: " + "; ".join(f"{i} ({pp(x)})" for i, x in d13.sort_values().head(3).items()) + ".",
+            f"Comparecimento: {pc(comp22)} em 2022 e {pc(comp26)} em 2026; o número de eleitores "
+            f"aptos caiu de {num(aptos22)} para {num(aptos)}.",
+            "As seções foram comparadas pelo número (mesmos eleitores, em grande parte); a seção 161 "
+            "é nova e não entra na comparação.",
+        ]
+        bloco_insight(f"2022_{col_grupo}_{t}", f"Presidente: {turno} × 2026 por {g_sing}", fatos,
+                      tabela if len(tabela) <= 30 else None)
 
-        # ---- tabela
-        with st.expander("Tabela completa"):
-            tab = pd.concat({"2022": g22, "2026": g26}, axis=1).swaplevel(axis=1)
-            tab = tab[[(c, a) for c in CAMPOS for a in ("2022", "2026")]]
-            tab[("Margem 22−13", "2022")] = m22
-            tab[("Margem 22−13", "2026")] = m26
-            st.dataframe(tab.style.format("{:.1f}"), width="stretch")
+        st.subheader(f"Quanto cada um ganhou ou perdeu por {g_sing}")
+        campo = st.radio("Ver", list(CAMPOS), horizontal=True, key="campo_2022")
+        dd = pd.DataFrame({"a": g22[campo], "b": g26[campo]}).dropna()
+        dd["d"] = dd["b"] - dd["a"]
+        dd = dd.sort_values("d")
+        rot = [f"{pp(r.d)}  ({r.a:.0f}% → {r.b:.0f}%)" for r in dd.itertuples()]
+        barras_h(dd["d"], CAMPOS[campo], rot,
+                 "<b>%{y}</b><br>2022: %{customdata[0]:.1f}%<br>2026: %{customdata[1]:.1f}%"
+                 "<extra></extra>",
+                 f"variação de {campo} em pontos percentuais", 0, "", custom=dd[["a", "b"]].values)
+        st.caption("Barra para a direita = o candidato teve uma fatia maior dos votos válidos em 2026 "
+                   "do que em 2022 naquele lugar; para a esquerda = menor. Entre parênteses, o "
+                   "percentual de 2022 → 2026.")
 
-# ---------------------------------------------------------------- aba 5
-with aba5:
-    st.write(f"Votos válidos de **{cargo}** por {nome_grupo.lower()} × candidato")
-    st.dataframe(pivot, width="stretch")
+        st.subheader("Tabela lado a lado")
+        st.dataframe(tabela.rename_axis(nome_grupo).style.format(
+            {c: ("{:+.1f}" if c.startswith("Variação") else "{:.1f}%") for c in tabela.columns}),
+            width="stretch")
+        st.caption("Percentuais sobre votos válidos. As 9 seções que votavam no IESI em 2022 foram "
+                   "transferidas para a ETEC e aparecem no grupo de 2026.")
+
+# ---------------------------------------------------------------- aba 7: dados
+with aba7:
+    st.write(f"Votos válidos de **{cargo}** por {g_sing} × candidato")
+    st.dataframe(pivot.rename_axis(nome_grupo), width="stretch")
     st.download_button("Baixar CSV", pivot.to_csv(sep=";", encoding="utf-8-sig").encode("utf-8-sig"),
                        file_name=f"itapira_2026_{cargo.lower().replace(' ', '_')}_{col_grupo.lower()}.csv")
     st.write("Seções → locais → bairros")
     st.dataframe(secoes, width="stretch", hide_index=True)
 
 st.markdown('<div class="in-rodape"><b>Fonte:</b> TSE – Dados Abertos (votação por seção, locais de '
-            'votação e perfil do eleitorado) · Eleições 2026, 1º turno · Zona Eleitoral 0054</div>',
+            'votação e perfil do eleitorado) · Eleições 2022 e 2026 · Zona Eleitoral 0054'
+            + (' · Análises em texto geradas por IA (Claude)' if API_KEY else '') + '</div>',
             unsafe_allow_html=True)
+
+# ---------------------------------------------------------------- análises da IA
+# as chamadas rodam em paralelo desde que cada bloco foi criado; aqui só esperamos e preenchemos
+for ph, chave, fut, fatos in PENDENTES:
+    try:
+        texto = fut.result(timeout=180)
+    except Exception:  # timeout ou erro inesperado: fica com os fatos calculados
+        texto = None
+    _render_insight(ph, chave, texto, fatos, False, final=True)

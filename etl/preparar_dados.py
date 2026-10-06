@@ -6,8 +6,8 @@ Saídas em data/itapira/:
   perfil_secao.parquet  eleitores aptos por seção x gênero/idade/escolaridade/estado civil/raça
   secoes.csv            seção -> local de votação -> bairro (TSE) + coordenadas
 Saída em mapping/:
-  bairros.csv           um local de votação por linha; colunas BAIRRO e REGIAO
-                        editáveis à mão (só é criado se ainda não existir)
+  bairros.csv           um local de votação por linha; coluna BAIRRO (e coordenadas)
+                        editável à mão (só é criado se ainda não existir)
 
 Uso:  python etl/preparar_dados.py
 """
@@ -125,10 +125,9 @@ def gerar_mapeamento(secoes: pd.DataFrame) -> None:
                     .reset_index()
                     .rename(columns={"NM_BAIRRO": "BAIRRO_TSE"}))
     locais["BAIRRO"] = locais["BAIRRO_TSE"].str.strip().str.title()
-    locais["REGIAO"] = ""
     MAPPING.parent.mkdir(parents=True, exist_ok=True)
     locais.sort_values("BAIRRO").to_csv(MAPPING, index=False, encoding="utf-8-sig")
-    print(f"Criado {MAPPING.relative_to(ROOT)} com {len(locais)} locais - revise BAIRRO/REGIAO.")
+    print(f"Criado {MAPPING.relative_to(ROOT)} com {len(locais)} locais - revise BAIRRO.")
 
 
 def main() -> None:
