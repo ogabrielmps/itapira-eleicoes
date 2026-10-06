@@ -7,7 +7,8 @@ agrupada por bairro, região, local de votação ou seção.
 
 ```bash
 pip install -r requirements.txt
-python etl/preparar_dados.py   # baixa do TSE (~1 GB) e gera data/itapira/
+python etl/preparar_dados.py   # baixa do TSE (~1,6 GB) e gera data/itapira/
+python etl/preparar_2022.py    # Presidente 2022 (1º e 2º turno), para a aba 2022 × 2026
 streamlit run app/app.py
 ```
 

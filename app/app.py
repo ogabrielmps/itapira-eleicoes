@@ -62,6 +62,7 @@ h3::after {{ content: ""; display: block; width: 56px; height: 5px; margin-top: 
                   color: #5a6b8c; }}
 .in-kpi .valor {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800; font-size: 2.3rem;
                  color: {MARINHO}; line-height: 1.1; }}
+.in-kpi .apoio {{ font-size: .85rem; font-weight: 600; color: #5a6b8c; margin-top: .15rem; }}
 @media (max-width: 760px) {{ .in-kpis {{ grid-template-columns: repeat(2, 1fr); }} }}
 
 [data-testid="stTab"] p {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800;
@@ -96,12 +97,20 @@ def mostrar(fig):
     """Plotly com margem automática (nomes longos de bairro não cortam)."""
     fig.update_xaxes(automargin=True)
     fig.update_yaxes(automargin=True)
+    # automargin nem sempre basta no Streamlit: reserva espaço pelo maior rótulo de texto do eixo y
+    rotulos = [str(y) for t in fig.data if t.y is not None and t.type in ("bar", "scatter")
+               for y in t.y if isinstance(y, str)]
+    if rotulos:
+        fig.update_layout(margin_l=max(fig.layout.margin.l or 0, 7 * max(map(len, rotulos)) + 10))
     st.plotly_chart(fig, width="stretch")
 
 
-def kpis(itens: list[tuple[str, str]]):
-    cards = "".join(f'<div class="in-kpi"><div class="rotulo">{r}</div><div class="valor">{v}</div></div>'
-                    for r, v in itens)
+def kpis(itens: list[tuple]):
+    """Cartões (rótulo, valor) ou (rótulo, valor, linha de apoio)."""
+    cards = "".join(
+        f'<div class="in-kpi"><div class="rotulo">{i[0]}</div><div class="valor">{i[1]}</div>'
+        + (f'<div class="apoio">{i[2]}</div>' if len(i) > 2 else "") + "</div>"
+        for i in itens)
     st.markdown(f'<div class="in-kpis">{cards}</div>', unsafe_allow_html=True)
 
 AGRUPAMENTOS = {
@@ -199,6 +208,30 @@ def indicadores(soma: pd.DataFrame) -> pd.DataFrame:
 
 
 perfil, perfil_secao = carregar_perfil()
+
+
+@st.cache_data
+def carregar_2022():
+    """Presidente 2022 por seção (gerado por etl/preparar_2022.py)."""
+    if not (DADOS / "votos_2022.parquet").exists():
+        return None, None
+    return pd.read_parquet(DADOS / "votos_2022.parquet"), pd.read_csv(DADOS / "secoes_2022.csv")
+
+
+v22, secoes_22 = carregar_2022()
+
+# Ligação entre os anos pelo número na urna: 22 = Jair (2022) / Flávio (2026); 13 = Lula
+CAMPOS = {"Bolsonaro (22)": SERIES[0], "Lula (13)": SERIES[1], "Demais candidatos": SERIES[2]}
+
+
+def votos_por_campo(df: pd.DataFrame, grupo: pd.Series) -> pd.DataFrame:
+    """Votos (NR_SECAO, NR_VOTAVEL, QT_VOTOS) -> votos por grupo x campo."""
+    campo = np.select([df["NR_VOTAVEL"] == 22, df["NR_VOTAVEL"] == 13,
+                       df["NR_VOTAVEL"].isin([BRANCO, NULO])],
+                      ["Bolsonaro (22)", "Lula (13)", "Brancos e nulos"], "Demais candidatos")
+    return (df.assign(CAMPO=campo, GRUPO=df["NR_SECAO"].map(grupo))
+              .pivot_table(index="GRUPO", columns="CAMPO", values="QT_VOTOS", aggfunc="sum",
+                           fill_value=0))
 sem_bairro = votos["BAIRRO"].isna().sum()
 
 # ---------------------------------------------------------------- filtros
@@ -261,9 +294,13 @@ kpis([
 if sem_bairro:
     st.warning(f"{sem_bairro} linhas de voto sem bairro mapeado - confira mapping/bairros.csv.")
 
-aba1, aba2, aba3, aba4, aba6, aba5 = st.tabs(
+# seção -> grupo escolhido (mapeamento de 2026; usado também para 2022)
+grupo_secao = secoes.set_index("NR_SECAO")[col_grupo] if col_grupo != "NR_SECAO" \
+    else secoes.set_index("NR_SECAO").index.to_series()
+
+aba1, aba2, aba3, aba4, aba6, aba7, aba5 = st.tabs(
     ["🏆 Quem venceu onde", "👤 Desempenho por candidato", "🔥 Comparativo",
-     "🚶 Comparecimento", "👥 Perfil do eleitorado", "📄 Dados"])
+     "🚶 Comparecimento", "👥 Perfil do eleitorado", "🔁 2022 × 2026", "📄 Dados"])
 
 
 def fmt_pct(x):
@@ -406,8 +443,6 @@ with aba6:
 
     # ---- perfil por grupo
     st.subheader(f"Perfil por {nome_grupo.lower()}")
-    grupo_secao = secoes.set_index("NR_SECAO")[col_grupo] if col_grupo != "NR_SECAO" \
-        else secoes.set_index("NR_SECAO").index.to_series()
     tab_perfil = indicadores(perfil_secao.groupby(grupo_secao).sum())
     cidade = indicadores(perfil_secao.sum().to_frame().T).iloc[0]
     ind = st.selectbox("Indicador", list(INDICADORES), key="ind_grupo")
@@ -501,6 +536,115 @@ with aba6:
     br = lambda x: f"{x:+.2f}".replace(".", ",")
     st.markdown(f"Correlação **{br(r)}** ({forca}). Em média, cada **+1 {unidade}** em "
                 f"*{ind_p.lower()}* acompanha **{br(a)} p.p.** para {cand_p}.")
+
+# ---------------------------------------------------------------- aba 7
+with aba7:
+    if v22 is None:
+        st.warning("Dados de 2022 não encontrados. Rode `python etl/preparar_2022.py`.")
+    else:
+        st.info("Esta aba compara sempre **Presidente**, qualquer que seja o cargo na barra lateral. "
+                "As seções são comparadas pelo número: os mesmos eleitores, em grande parte. As 9 seções "
+                "que votavam no IESI em 2022 foram para a ETEC e aqui contam no grupo de 2026. A seção 161 "
+                "é nova e não tem dados de 2022.", icon="ℹ️")
+        turno = st.radio("Comparar 2026 com", ["1º turno de 2022", "2º turno de 2022"],
+                         horizontal=True)
+        t = 1 if turno.startswith("1") else 2
+
+        p22 = votos_por_campo(v22[v22["NR_TURNO"] == t], grupo_secao)
+        p26 = votos_por_campo(votos[votos["CD_CARGO"] == 1], grupo_secao)
+        cid = pd.Series("Itapira", index=grupo_secao.index)
+        c22 = votos_por_campo(v22[v22["NR_TURNO"] == t], cid).iloc[0]
+        c26 = votos_por_campo(votos[votos["CD_CARGO"] == 1], cid).iloc[0]
+
+        def pct_validos(p):
+            if isinstance(p, pd.Series):
+                p = p.reindex(list(CAMPOS), fill_value=0)
+                return p / p.sum() * 100
+            p = p.reindex(columns=list(CAMPOS), fill_value=0)
+            return p.div(p.sum(axis=1), axis=0) * 100
+
+        g22, g26 = pct_validos(p22), pct_validos(p26)
+        k22, k26 = pct_validos(c22), pct_validos(c26)
+
+        aptos22 = secoes_22.set_index("NR_SECAO")["QT_ELEITOR_SECAO"]
+        comp22 = c22.sum() / aptos22[aptos22.index.isin(grupo_secao.index)].sum() * 100
+        comp26 = c26.sum() / aptos * 100
+
+        def pp(x):
+            return f"{x:+.1f}".replace(".", ",") + " p.p."
+
+        def pc(x):
+            return f"{x:.1f}%".replace(".", ",")
+
+        kpis([
+            ("Bolsonaro (22)", pc(k26["Bolsonaro (22)"]),
+             f"2022: {pc(k22['Bolsonaro (22)'])} · {pp(k26['Bolsonaro (22)'] - k22['Bolsonaro (22)'])}"),
+            ("Lula (13)", pc(k26["Lula (13)"]),
+             f"2022: {pc(k22['Lula (13)'])} · {pp(k26['Lula (13)'] - k22['Lula (13)'])}"),
+            ("Comparecimento", pc(comp26), f"2022: {pc(comp22)} · {pp(comp26 - comp22)}"),
+            ("Eleitores aptos", f"{aptos:,}".replace(",", "."),
+             f"2022: {secoes_22['QT_ELEITOR_SECAO'].sum():,}".replace(",", ".")),
+        ])
+        st.caption("Percentuais sobre votos válidos. Bolsonaro (22) = Jair em 2022 e Flávio em 2026.")
+
+        # ---- halteres: 2022 -> 2026 por grupo
+        st.subheader(f"De 2022 para 2026 por {nome_grupo.lower()}")
+        campo = st.radio("Campo", list(CAMPOS), horizontal=True, key="campo_2022")
+        d = pd.DataFrame({"2022": g22[campo], "2026": g26[campo]}).dropna()
+        d["Δ"] = d["2026"] - d["2022"]
+        d = d.sort_values("Δ")
+        y = d.index.astype(str)
+        fig = go.Figure()
+        for yi, a0, a1 in zip(y, d["2022"], d["2026"]):
+            fig.add_shape(type="line", x0=a0, x1=a1, y0=yi, y1=yi, layer="below",
+                          line=dict(color="#c5cfdf", width=3))
+        fig.add_trace(go.Scatter(
+            x=d["2022"], y=y, mode="markers", name="2022",
+            marker=dict(size=11, color="#ffffff", line=dict(width=2.5, color=OUTROS)),
+            hovertemplate="<b>%{y}</b><br>2022: %{x:.1f}%<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=d["2026"], y=y, mode="markers", name="2026",
+            marker=dict(size=12, color=CAMPOS[campo], line=dict(width=2, color="#ffffff")),
+            customdata=d[["Δ"]],
+            hovertemplate="<b>%{y}</b><br>2026: %{x:.1f}%<br>variação %{customdata[0]:+.1f} p.p."
+                          "<extra></extra>"))
+        fig.update_layout(height=max(380, 24 * len(d) + 90), margin=dict(l=10, r=20, t=30, b=10),
+                          xaxis_title=f"% de {campo} nos válidos", yaxis_title=None,
+                          legend=dict(orientation="h", y=1.06, x=0))
+        fig.update_yaxes(type="category")
+        mostrar(fig)
+
+        # ---- mudança na margem 22 - 13
+        st.subheader("Para que lado cada um se moveu")
+        m22 = g22["Bolsonaro (22)"] - g22["Lula (13)"]
+        m26 = g26["Bolsonaro (22)"] - g26["Lula (13)"]
+        dm = (m26 - m22).dropna().sort_values()
+        fig = go.Figure(go.Bar(
+            x=dm, y=dm.index.astype(str), orientation="h",
+            marker=dict(color=[CAMPOS["Bolsonaro (22)"] if x > 0 else CAMPOS["Lula (13)"] for x in dm],
+                        cornerradius=4),
+            customdata=np.c_[m22.reindex(dm.index), m26.reindex(dm.index)],
+            hovertemplate="<b>%{y}</b><br>margem 2022: %{customdata[0]:+.1f} p.p.<br>"
+                          "margem 2026: %{customdata[1]:+.1f} p.p.<br>variação %{x:+.1f} p.p."
+                          "<extra></extra>"))
+        fig.add_vline(x=0, line_color=OUTROS, line_width=1)
+        fig.update_layout(height=max(380, 22 * len(dm) + 80), margin=dict(l=10, r=20, t=10, b=10),
+                          xaxis_title="variação da margem 22 − 13 (p.p.)", yaxis_title=None,
+                          bargap=0.25)
+        fig.update_yaxes(type="category")
+        mostrar(fig)
+        st.caption(f"Margem = % do 22 − % do 13. Barras **azuis**: a vantagem do 22 aumentou (ou a do 13 "
+                   f"diminuiu). Barras **laranjas**: o 13 ganhou terreno. Na cidade: "
+                   f"{pp(k22['Bolsonaro (22)'] - k22['Lula (13)'])} em 2022 → "
+                   f"{pp(k26['Bolsonaro (22)'] - k26['Lula (13)'])} em 2026.")
+
+        # ---- tabela
+        with st.expander("Tabela completa"):
+            tab = pd.concat({"2022": g22, "2026": g26}, axis=1).swaplevel(axis=1)
+            tab = tab[[(c, a) for c in CAMPOS for a in ("2022", "2026")]]
+            tab[("Margem 22−13", "2022")] = m22
+            tab[("Margem 22−13", "2026")] = m26
+            st.dataframe(tab.style.format("{:.1f}"), width="stretch")
 
 # ---------------------------------------------------------------- aba 5
 with aba5:
