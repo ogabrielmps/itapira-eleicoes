@@ -1,0 +1,21 @@
+# Visual no estilo dos posts de eleição (azul-marinho, azul, amarelo)
+[theme]
+base = "light"
+primaryColor = "#1565d8"
+backgroundColor = "#f2f5fa"
+secondaryBackgroundColor = "#e6edf7"
+textColor = "#0b2557"
+linkColor = "#1565d8"
+borderColor = "#d5deeb"
+baseRadius = "0.6rem"
+font = "Barlow:https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap"
+headingFont = "Barlow Condensed:https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&display=swap"
+headingFontWeights = [900, 800, 800, 700, 700, 700]
+chartCategoricalColors = ["#1565d8", "#eb6834", "#1baf7a"]
+
+[theme.sidebar]
+backgroundColor = "#0b2557"
+secondaryBackgroundColor = "#16367a"
+textColor = "#ffffff"
+primaryColor = "#f6b500"
+borderColor = "#2a4a8f"

@@ -21,10 +21,88 @@ MAPPING = ROOT / "mapping" / "bairros.csv"
 
 BRANCO, NULO = 95, 96
 # Paleta categórica (ordem fixa, validada para daltonismo nas 3 primeiras posições)
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
-OUTROS = "#898781"
-SEQ = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
-DIV = [[0, "#e34948"], [0.5, "#f0efec"], [1, "#2a78d6"]]
+# (azul, laranja "corrige", verde "confirma" - as teclas da urna)
+SERIES = ["#1565d8", "#eb6834", "#1baf7a"]
+OUTROS = "#8a93a6"
+SEQ = ["#dce8fa", "#86b6ef", "#3987e5", "#1559c7", "#0b2557"]
+DIV = [[0, "#e34948"], [0.5, "#eef1f5"], [1, "#1565d8"]]
+
+# identidade visual
+MARINHO, AZUL, AMARELO = "#0b2557", "#1565d8", "#f6b500"
+CSS = f"""
+<style>
+.block-container {{ padding-top: 4rem; }}
+h1, h2, h3 {{ text-transform: uppercase; letter-spacing: .01em; }}
+h3 {{ font-size: 1.6rem !important; }}
+h3::after {{ content: ""; display: block; width: 56px; height: 5px; margin-top: 6px;
+            background: {AMARELO}; border-radius: 3px; }}
+[data-testid="stSidebar"] h1::after {{ display: none; }}
+
+.in-hero {{ display: grid; grid-template-columns: 1fr 1.25fr; gap: 1.25rem; align-items: stretch;
+           margin-bottom: 1.25rem; }}
+.in-hero .marca {{ padding: .5rem 0; }}
+.in-hero .eleicoes {{ font-family: "Barlow Condensed", sans-serif; font-weight: 900; line-height: .85;
+                     font-size: clamp(2.6rem, 6vw, 4.6rem); color: {MARINHO}; }}
+.in-hero .ano {{ color: {AZUL}; }}
+.in-hero .barra {{ width: 42%; height: 8px; background: {AMARELO}; border-radius: 4px; margin: .8rem 0 .6rem; }}
+.in-hero .local {{ font-weight: 700; color: {MARINHO}; font-size: 1.05rem; letter-spacing: .02em; }}
+.in-hero .local span {{ font-weight: 500; opacity: .75; }}
+.in-hero .caixa {{ background: linear-gradient(135deg, {MARINHO} 0%, #12398a 100%); color: #fff;
+                  border-radius: 14px; padding: 1.2rem 1.5rem; display: flex; flex-direction: column;
+                  justify-content: center; box-shadow: 0 8px 24px rgba(11,37,87,.18);
+                  font-family: "Barlow Condensed", sans-serif; text-transform: uppercase; line-height: 1; }}
+.in-hero .caixa .linha {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.8rem); }}
+.in-hero .caixa .destaque {{ font-weight: 900; color: {AMARELO}; font-size: clamp(2rem, 4.2vw, 3.4rem); }}
+@media (max-width: 760px) {{ .in-hero {{ grid-template-columns: 1fr; }} }}
+
+.in-kpis {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: .9rem; margin-bottom: 1.2rem; }}
+.in-kpi {{ background: #fff; border-radius: 12px; padding: .9rem 1.1rem; border-left: 6px solid {AZUL};
+          box-shadow: 0 2px 10px rgba(11,37,87,.07); }}
+.in-kpi .rotulo {{ font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+                  color: #5a6b8c; }}
+.in-kpi .valor {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800; font-size: 2.3rem;
+                 color: {MARINHO}; line-height: 1.1; }}
+@media (max-width: 760px) {{ .in-kpis {{ grid-template-columns: repeat(2, 1fr); }} }}
+
+[data-testid="stTab"] p {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800;
+                          text-transform: uppercase; font-size: 1.1rem; letter-spacing: .02em; }}
+[data-testid="stTab"][aria-selected="true"] p {{ color: {MARINHO}; }}
+[role="tablist"] .react-aria-SelectionIndicator {{ background-color: {AMARELO} !important; height: 4px; }}
+
+.in-rodape {{ margin-top: 2.5rem; padding: 1rem 1.25rem; border-radius: 12px; background: {MARINHO};
+             color: #cfd9ee; font-size: .85rem; }}
+.in-rodape b {{ color: #fff; }}
+</style>
+"""
+
+
+def hero(destaque: str, linha_cima: str = "Resultado da votação para", linha_baixo: str = ""):
+    st.markdown(CSS + f"""
+<div class="in-hero">
+  <div class="marca">
+    <div class="eleicoes">ELEIÇÕES<br><span class="ano">2026</span></div>
+    <div class="barra"></div>
+    <div class="local">ITAPIRA, SP <span>| 1º TURNO</span></div>
+  </div>
+  <div class="caixa">
+    <div class="linha">{linha_cima}</div>
+    <div class="destaque">{destaque}</div>
+    <div class="linha">{linha_baixo}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+
+def mostrar(fig):
+    """Plotly com margem automática (nomes longos de bairro não cortam)."""
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
+    st.plotly_chart(fig, width="stretch")
+
+
+def kpis(itens: list[tuple[str, str]]):
+    cards = "".join(f'<div class="in-kpi"><div class="rotulo">{r}</div><div class="valor">{v}</div></div>'
+                    for r, v in itens)
+    st.markdown(f'<div class="in-kpis">{cards}</div>', unsafe_allow_html=True)
 
 AGRUPAMENTOS = {
     "Bairro": "BAIRRO",
@@ -46,7 +124,7 @@ def senha_configurada():
 
 SENHA = senha_configurada()
 if SENHA and not st.session_state.get("autenticado"):
-    st.title("🗳️ Itapira · 2026")
+    hero("Acesso restrito", "Painel de votação", "Digite a senha para entrar")
     with st.form("login"):
         digitada = st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
@@ -124,8 +202,8 @@ perfil, perfil_secao = carregar_perfil()
 sem_bairro = votos["BAIRRO"].isna().sum()
 
 # ---------------------------------------------------------------- filtros
-st.sidebar.title("🗳️ Itapira · 2026")
-st.sidebar.caption("Zona 0054 · 1º turno · fonte: TSE Dados Abertos")
+st.sidebar.title("📊 Itapira · 2026")
+st.sidebar.caption("Zona 0054 · 1º turno")
 
 ordem_cargos = ["Presidente", "Governador", "Senador", "Deputado Federal", "Deputado Estadual"]
 cargos = [c for c in ordem_cargos if c in votos["DS_CARGO"].unique()]
@@ -170,16 +248,16 @@ votantes = (votos[votos["DS_CARGO"] == "Governador"].groupby("NR_SECAO")["QT_VOT
 sec = secoes.merge(votantes, on="NR_SECAO", how="left").fillna({"VOTANTES": 0})
 
 # ---------------------------------------------------------------- cabeçalho
-st.title(f"{cargo} · votos por {nome_grupo.lower()}")
-k1, k2, k3, k4 = st.columns(4)
+hero(cargo, linha_baixo=f"em Itapira · por {nome_grupo.lower()}")
 aptos = int(sec["QT_ELEITOR_SECAO"].sum())
 comp = int(sec["VOTANTES"].sum())
-k1.metric("Eleitores aptos", f"{aptos:,}".replace(",", "."))
-k2.metric("Comparecimento", f"{comp / aptos:.1%}".replace(".", ","))
-k3.metric("Votos válidos (" + ("com legenda" if legenda else "nominais") + ")",
-          f"{total_validos:,}".replace(",", "."))
 bn = v[v["TIPO"].isin(["Branco", "Nulo"])]["QT_VOTOS"].sum()
-k4.metric("Brancos + nulos", f"{bn / v['QT_VOTOS'].sum():.1%}".replace(".", ","))
+kpis([
+    ("Eleitores aptos", f"{aptos:,}".replace(",", ".")),
+    ("Comparecimento", f"{comp / aptos:.1%}".replace(".", ",")),
+    ("Votos válidos" + (" (com legenda)" if legenda else ""), f"{total_validos:,}".replace(",", ".")),
+    ("Brancos + nulos", f"{bn / v['QT_VOTOS'].sum():.1%}".replace(".", ",")),
+])
 if sem_bairro:
     st.warning(f"{sem_bairro} linhas de voto sem bairro mapeado - confira mapping/bairros.csv.")
 
@@ -269,7 +347,7 @@ with aba2:
                   annotation_position="top")
     fig.update_layout(height=max(380, 22 * len(serie) + 80), margin=dict(l=10, r=20, t=40, b=10),
                       xaxis_title="% dos votos válidos", yaxis_title=None, bargap=0.25)
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     st.caption("Índice = % no grupo ÷ % na cidade × 100. Acima de 100 = desempenho acima da média.")
     st.dataframe(serie.sort_values("%", ascending=False)
                  .style.format({"%": fmt_pct, "Índice vs cidade": "{:.0f}", "Votos": "{:,.0f}"}),
@@ -295,7 +373,7 @@ with aba3:
     fig.update_layout(height=max(400, 26 * len(z) + 140), margin=dict(l=10, r=10, t=10, b=10),
                       xaxis_title=None, yaxis_title=None, xaxis_side="top")
     fig.update_yaxes(type="category")
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     if modo != "% dos válidos":
         st.caption("Azul = acima da média do candidato na cidade · vermelho = abaixo · cinza = na média.")
 
@@ -316,7 +394,7 @@ with aba4:
                   annotation_text=f"cidade {media:.1f}%", annotation_position="top")
     fig.update_layout(height=max(380, 22 * len(g) + 80), margin=dict(l=10, r=20, t=40, b=10),
                       xaxis_title="% de comparecimento", xaxis_range=[50, 100], bargap=0.25)
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     st.caption("Comparecimento = votos para Governador ÷ eleitores aptos da seção. "
                "Eleitores em trânsito podem distorcer levemente algumas seções.")
 
@@ -345,7 +423,7 @@ with aba6:
     fig.update_layout(height=max(380, 22 * len(g) + 80), margin=dict(l=10, r=20, t=40, b=10),
                       xaxis_title=ind, yaxis_title=None, bargap=0.25)
     fig.update_yaxes(type="category")
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     with st.expander("Tabela com todos os indicadores"):
         st.dataframe(tab_perfil.sort_values("Eleitores", ascending=False)
                      .style.format("{:.1f}").format("{:,.0f}", subset=["Eleitores"]),
@@ -372,7 +450,7 @@ with aba6:
     fig.update_layout(barmode="group", height=340, margin=dict(l=10, r=10, t=30, b=10),
                       yaxis_title="% dos eleitores", bargap=0.25, bargroupgap=0.08,
                       legend=dict(orientation="h", y=1.12, x=0))
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
 
     # ---- voto x perfil (por seção)
     st.subheader(f"{cargo}: voto × perfil, seção a seção")
@@ -391,7 +469,7 @@ with aba6:
                       hovertemplate="<b>%{y}</b><br>%{x}<br>correlação %{z:.2f}<extra></extra>")
     fig.update_layout(height=120 + 34 * n_top, margin=dict(l=10, r=10, t=10, b=10),
                       xaxis_title=None, yaxis_title=None, xaxis_side="top")
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     st.caption("Correlação entre o % do candidato na seção e o indicador (161 seções). "
                "Azul = vai melhor onde o indicador é mais alto · vermelho = vai pior · "
                "|r| < 0,3 fraca, 0,3–0,5 moderada, > 0,5 forte.")
@@ -417,7 +495,7 @@ with aba6:
     ])
     fig.update_layout(height=440, margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
                       xaxis_title=ind_p, yaxis_title=f"% de {cand_p} nos válidos")
-    st.plotly_chart(fig, width="stretch")
+    mostrar(fig)
     forca = "fraca" if abs(r) < 0.3 else "moderada" if abs(r) < 0.5 else "forte"
     unidade = "ano" if ind_p == "Idade média" else "ponto percentual"
     br = lambda x: f"{x:+.2f}".replace(".", ",")
@@ -432,3 +510,7 @@ with aba5:
                        file_name=f"itapira_2026_{cargo.lower().replace(' ', '_')}_{col_grupo.lower()}.csv")
     st.write("Seções → locais → bairros")
     st.dataframe(secoes, width="stretch", hide_index=True)
+
+st.markdown('<div class="in-rodape"><b>Fonte:</b> TSE – Dados Abertos (votação por seção, locais de '
+            'votação e perfil do eleitorado) · Eleições 2026, 1º turno · Zona Eleitoral 0054</div>',
+            unsafe_allow_html=True)
