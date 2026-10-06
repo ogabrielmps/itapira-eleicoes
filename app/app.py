@@ -4,6 +4,7 @@ Painel: votação de Itapira (Zona 54) por bairro - Eleições 2026, 1º turno.
 Rodar:  streamlit run app/app.py
 Dados:  gerados por etl/preparar_dados.py; bairros revisáveis em mapping/bairros.csv
 """
+import hmac
 from pathlib import Path
 
 import folium
@@ -33,6 +34,27 @@ AGRUPAMENTOS = {
 }
 
 st.set_page_config(page_title="Itapira 2026 · votos por bairro", page_icon="🗳️", layout="wide")
+
+
+# ---------------------------------------------------------------- acesso
+def senha_configurada():
+    try:
+        return st.secrets.get("senha")
+    except FileNotFoundError:  # rodando local sem secrets.toml
+        return None
+
+
+SENHA = senha_configurada()
+if SENHA and not st.session_state.get("autenticado"):
+    st.title("🗳️ Itapira · 2026")
+    with st.form("login"):
+        digitada = st.text_input("Senha", type="password")
+        if st.form_submit_button("Entrar"):
+            if hmac.compare_digest(digitada, str(SENHA)):
+                st.session_state["autenticado"] = True
+                st.rerun()
+            st.error("Senha incorreta.")
+    st.stop()
 
 
 # ---------------------------------------------------------------- dados
