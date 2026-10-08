@@ -1,21 +1,40 @@
-# Visual no estilo dos posts de eleição (azul-marinho, azul, amarelo)
+# Visual no estilo dos posts de eleição (azul-marinho, azul, amarelo), com tema claro e escuro.
+# O escuro é o padrão; o botão no topo da página alterna entre os dois.
 [theme]
-base = "light"
+base = "dark"
+baseRadius = "0.6rem"
+font = "Barlow:https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap"
+headingFont = "Barlow Condensed:https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&display=swap"
+headingFontWeights = [900, 800, 800, 700, 700, 700]
+
+[theme.light]
 primaryColor = "#1565d8"
 backgroundColor = "#f2f5fa"
 secondaryBackgroundColor = "#e6edf7"
 textColor = "#0b2557"
 linkColor = "#1565d8"
 borderColor = "#d5deeb"
-baseRadius = "0.6rem"
-font = "Barlow:https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap"
-headingFont = "Barlow Condensed:https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&display=swap"
-headingFontWeights = [900, 800, 800, 700, 700, 700]
 chartCategoricalColors = ["#1565d8", "#eb6834", "#1baf7a"]
 
-[theme.sidebar]
+[theme.dark]
+primaryColor = "#4d94ff"
+backgroundColor = "#0b1220"
+secondaryBackgroundColor = "#16213a"
+textColor = "#e6ecf7"
+linkColor = "#6ea8ff"
+borderColor = "#24324f"
+chartCategoricalColors = ["#3987e5", "#d95926", "#199e70"]
+
+[theme.light.sidebar]
 backgroundColor = "#0b2557"
 secondaryBackgroundColor = "#16367a"
 textColor = "#ffffff"
 primaryColor = "#f6b500"
 borderColor = "#2a4a8f"
+
+[theme.dark.sidebar]
+backgroundColor = "#070c17"
+secondaryBackgroundColor = "#16213a"
+textColor = "#ffffff"
+primaryColor = "#f6b500"
+borderColor = "#24324f"

@@ -1,84 +1,148 @@
-"""Identidade visual e componentes de página (cabeçalho, cartões, respostas)."""
+"""Identidade visual e componentes de página (cabeçalho, cartões, respostas), em tema claro e escuro.
+
+O tema nativo do Streamlit (widgets, tabelas, gráficos) vem de .streamlit/config.toml; o CSS próprio
+abaixo usa os mesmos tokens. `estilo(escuro)` define as cores do tema atual e injeta o CSS.
+"""
 import html
+import json
 
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
-# Paleta categórica (ordem fixa, validada para daltonismo nas 3 primeiras posições)
-SERIES = ["#1565d8", "#eb6834", "#1baf7a"]
-OUTROS = "#8a93a6"
-CINZA_CLARO = "#c5cfdf"
-SEQ = ["#dce8fa", "#9ec5f4", "#5598e7", "#1c5cab", "#0b2557"]
-MARINHO, AZUL, AMARELO = "#0b2557", "#1565d8", "#f6b500"
+AMARELO = "#f6b500"
 
-CSS = f"""
+# tokens por tema (séries categóricas validadas para daltonismo em cada fundo)
+TEMAS = {
+    "claro": dict(
+        series=["#1565d8", "#eb6834", "#1baf7a"], outros="#8a93a6", neutro="#c5cfdf",
+        destaque="#0b2557", azul="#1565d8", fundo="#f2f5fa", cartao="#ffffff", texto="#0b2557",
+        texto2="#24365e", suave="#5a6b8c", borda="#d5deeb", titulo="#0b2557", ano="#1565d8",
+        pergunta="#1565d8", insight="#f7f9fd", insight_borda="#b9c7e0", rodape="#0b2557",
+        rodape_txt="#cfd9ee", sombra="rgba(11,37,87,.08)",
+    ),
+    "escuro": dict(
+        series=["#3987e5", "#d95926", "#199e70"], outros="#8a93a6", neutro="#2f3e5c",
+        destaque=AMARELO, azul="#4d94ff", fundo="#0b1220", cartao="#121c31", texto="#e6ecf7",
+        texto2="#c9d4ea", suave="#9fb0cf", borda="#24324f", titulo="#ffffff", ano="#4d94ff",
+        pergunta="#6ea8ff", insight="#0f1a2e", insight_borda="#2a3a5c", rodape="#070c17",
+        rodape_txt="#9fb0cf", sombra="rgba(0,0,0,.35)",
+    ),
+}
+SEQ = ["#dce8fa", "#9ec5f4", "#5598e7", "#1c5cab", "#0b2557"]  # mapa (fundo do mapa é sempre claro)
+
+# valores do tema atual (definidos em estilo())
+T = TEMAS["escuro"]
+SERIES, OUTROS, CINZA_CLARO, DESTAQUE, AZUL, FUNDO = (T["series"], T["outros"], T["neutro"], T["destaque"],
+                                                      T["azul"], T["cartao"])
+
+
+def _css(t: dict) -> str:
+    return f"""
 <style>
-.block-container {{ padding-top: 4rem; max-width: 1200px; }}
+.block-container {{ padding-top: 3.2rem; max-width: 1200px; }}
 h1, h2, h3 {{ text-transform: uppercase; letter-spacing: .01em; }}
 h3 {{ font-size: 1.45rem !important; }}
 h3::after {{ content: ""; display: block; width: 56px; height: 5px; margin-top: 6px;
             background: {AMARELO}; border-radius: 3px; }}
-[data-testid="stSidebar"] h1::after {{ display: none; }}
 
 .in-hero {{ display: grid; grid-template-columns: 1fr 1.25fr; gap: 1.25rem; align-items: stretch;
            margin-bottom: 1.25rem; }}
 .in-hero .marca {{ padding: .5rem 0; }}
 .in-hero .eleicoes {{ font-family: "Barlow Condensed", sans-serif; font-weight: 900; line-height: .85;
-                     font-size: clamp(2.6rem, 6vw, 4.6rem); color: {MARINHO}; }}
-.in-hero .ano {{ color: {AZUL}; }}
+                     font-size: clamp(2.6rem, 6vw, 4.6rem); color: {t['titulo']}; }}
+.in-hero .ano {{ color: {t['ano']}; }}
 .in-hero .barra {{ width: 42%; height: 8px; background: {AMARELO}; border-radius: 4px; margin: .8rem 0 .6rem; }}
-.in-hero .local {{ font-weight: 700; color: {MARINHO}; font-size: 1.05rem; letter-spacing: .02em; }}
+.in-hero .local {{ font-weight: 700; color: {t['titulo']}; font-size: 1.05rem; letter-spacing: .02em; }}
 .in-hero .local span {{ font-weight: 500; opacity: .75; }}
-.in-hero .caixa {{ background: linear-gradient(135deg, {MARINHO} 0%, #12398a 100%); color: #fff;
+.in-hero .caixa {{ background: linear-gradient(135deg, #0b2557 0%, #12398a 100%); color: #fff;
                   border-radius: 14px; padding: 1.2rem 1.5rem; display: flex; flex-direction: column;
-                  justify-content: center; box-shadow: 0 8px 24px rgba(11,37,87,.18);
+                  justify-content: center; box-shadow: 0 8px 24px {t['sombra']};
+                  border: 1px solid {t['borda']};
                   font-family: "Barlow Condensed", sans-serif; text-transform: uppercase; line-height: 1; }}
 .in-hero .caixa .linha {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.8rem); }}
 .in-hero .caixa .destaque {{ font-weight: 900; color: {AMARELO}; font-size: clamp(2rem, 4.2vw, 3.4rem); }}
 @media (max-width: 760px) {{ .in-hero {{ grid-template-columns: 1fr; }} }}
 
-.in-kpis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .9rem;
-           margin: .4rem 0 1.2rem; }}
-.in-kpi {{ background: #fff; border-radius: 12px; padding: .9rem 1.1rem; border-left: 6px solid {AZUL};
-          box-shadow: 0 2px 10px rgba(11,37,87,.07); }}
+.in-kpis {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: .9rem; margin: .4rem 0 1.2rem; }}
+@media (max-width: 900px) {{ .in-kpis {{ grid-template-columns: repeat(2, 1fr); }} }}
+.in-kpi {{ background: {t['cartao']}; border-radius: 12px; padding: .9rem 1.1rem; border-left: 6px solid {t['azul']};
+          box-shadow: 0 2px 10px {t['sombra']}; }}
 .in-kpi .rotulo {{ font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
-                  color: #5a6b8c; }}
+                  color: {t['suave']}; }}
 .in-kpi .valor {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800; font-size: 2.1rem;
-                 color: {MARINHO}; line-height: 1.1; }}
-.in-kpi .apoio {{ font-size: .85rem; font-weight: 600; color: #5a6b8c; margin-top: .15rem; }}
+                 color: {t['titulo']}; line-height: 1.1; }}
+.in-kpi .apoio {{ font-size: .85rem; font-weight: 600; color: {t['suave']}; margin-top: .15rem; }}
 
-.in-resposta {{ background: #fff; border-radius: 14px; padding: 1.3rem 1.6rem 1.1rem; margin: .4rem 0 1.4rem;
-               border-top: 6px solid {AMARELO}; box-shadow: 0 2px 14px rgba(11,37,87,.09); }}
+.in-resposta {{ background: {t['cartao']}; border-radius: 14px; padding: 1.3rem 1.6rem 1.1rem;
+               margin: .4rem 0 1.4rem; border-top: 6px solid {AMARELO}; box-shadow: 0 2px 14px {t['sombra']}; }}
 .in-resposta .pergunta {{ font-size: .82rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em;
-                         color: {AZUL}; margin-bottom: .35rem; }}
-.in-resposta .texto {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800; color: {MARINHO};
+                         color: {t['pergunta']}; margin-bottom: .35rem; }}
+.in-resposta .texto {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800; color: {t['titulo']};
                       font-size: clamp(1.45rem, 2.6vw, 2.05rem); line-height: 1.15; }}
-.in-resposta ul {{ margin: .9rem 0 0; padding-left: 1.1rem; color: #24365e; }}
+.in-resposta ul {{ margin: .9rem 0 0; padding-left: 1.1rem; color: {t['texto2']}; }}
 .in-resposta li {{ margin-bottom: .4rem; line-height: 1.45; }}
-.in-resposta b {{ color: {MARINHO}; }}
+.in-resposta b {{ color: {t['titulo']}; }}
 
-.in-nota {{ font-size: .85rem; color: #5a6b8c; border-left: 3px solid {CINZA_CLARO}; padding: .2rem .8rem;
+.in-nota {{ font-size: .85rem; color: {t['suave']}; border-left: 3px solid {t['borda']}; padding: .2rem .8rem;
            margin: .2rem 0 1rem; }}
+.in-nota b {{ color: {t['texto2']}; }}
 
 [data-testid="stTab"] p {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800;
                           text-transform: uppercase; font-size: 1.05rem; letter-spacing: .02em; }}
-[data-testid="stTab"][aria-selected="true"] p {{ color: {MARINHO}; }}
+[data-testid="stTab"][aria-selected="true"] p {{ color: {t['titulo']}; }}
 [role="tablist"] .react-aria-SelectionIndicator {{ background-color: {AMARELO} !important; height: 4px; }}
 
-[class*="st-key-insight"] {{ background: #f7f9fd; border-radius: 14px; border: 1px dashed #b9c7e0;
+[class*="st-key-insight"] {{ background: {t['insight']}; border-radius: 14px; border: 1px dashed {t['insight_borda']};
                             padding: .9rem 1.3rem .5rem; margin: .4rem 0 1.4rem; }}
 [class*="st-key-insight"] .in-insight-titulo {{ font-family: "Barlow Condensed", sans-serif; font-weight: 800;
-                            text-transform: uppercase; font-size: 1.15rem; color: {MARINHO}; }}
+                            text-transform: uppercase; font-size: 1.15rem; color: {t['titulo']}; }}
 
-.in-rodape {{ margin-top: 2.5rem; padding: 1rem 1.25rem; border-radius: 12px; background: {MARINHO};
-             color: #cfd9ee; font-size: .85rem; }}
+.in-rodape {{ margin-top: 2.5rem; padding: 1rem 1.25rem; border-radius: 12px; background: {t['rodape']};
+             color: {t['rodape_txt']}; font-size: .85rem; border: 1px solid {t['borda']}; }}
 .in-rodape b {{ color: #fff; }}
 </style>
 """
 
 
-def estilo():
-    st.markdown(CSS, unsafe_allow_html=True)
+def estilo(escuro: bool):
+    """Define as cores do tema atual e injeta o CSS da página."""
+    global T, SERIES, OUTROS, CINZA_CLARO, DESTAQUE, AZUL, FUNDO
+    T = TEMAS["escuro" if escuro else "claro"]
+    SERIES, OUTROS, CINZA_CLARO, DESTAQUE, AZUL, FUNDO = (T["series"], T["outros"], T["neutro"], T["destaque"],
+                                                          T["azul"], T["cartao"])
+    st.markdown(_css(T), unsafe_allow_html=True)
+
+
+def botao_tema(escuro: bool):
+    """Botão que alterna claro/escuro.
+
+    O Streamlit guarda a escolha de tema do visitante no localStorage do navegador; o botão grava a
+    escolha oposta e recarrega a página. Na primeira visita (sem escolha salva), fixa o escuro."""
+    rotulo = "☀️ Modo claro" if escuro else "🌙 Modo escuro"
+    proximo = "Light" if escuro else "Dark"
+    t = T
+    components.html(f"""
+<style>
+  body {{ margin: 0; display: flex; justify-content: flex-end; font-family: "Barlow", system-ui, sans-serif; }}
+  button {{ background: {t['cartao']}; color: {t['titulo']}; border: 1px solid {t['borda']}; border-radius: 999px;
+           padding: 6px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }}
+  button:hover {{ border-color: {AMARELO}; }}
+</style>
+<button id="b">{rotulo}</button>
+<script>
+  const P = window.parent, K = "stActiveTheme-" + P.location.pathname + "-v2";
+  let salvo = null;
+  try {{ salvo = JSON.parse(P.localStorage.getItem(K)); }} catch (e) {{}}
+  if (!salvo || salvo === "System") {{
+    P.localStorage.setItem(K, JSON.stringify("Dark"));
+    if (!{json.dumps(escuro)}) P.location.reload();
+  }}
+  document.getElementById("b").onclick = () => {{
+    P.localStorage.setItem(K, JSON.stringify({json.dumps(proximo)}));
+    P.location.reload();
+  }};
+</script>""", height=40)
 
 
 def hero(destaque: str, linha_cima: str, linha_baixo: str = ""):

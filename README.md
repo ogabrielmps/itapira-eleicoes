@@ -33,6 +33,9 @@ o Brasil e a eleição de 2022.
 Código: `app/analise.py` (cálculos), `app/ui.py` (visual), `app/app.py` (capítulos),
 `app/insights.py` (leitura por IA).
 
+Tema escuro por padrão, com botão no topo para alternar para o claro (cores em `.streamlit/config.toml`
+e nos tokens de `app/ui.py`).
+
 ## Análises por IA
 
 Com uma chave de API, cada capítulo ganha um bloco "Leitura por IA": o Claude (`claude-opus-5-5`)

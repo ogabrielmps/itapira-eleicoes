@@ -24,11 +24,14 @@ import insights
 import ui
 from analise import (BRANCO, CARGOS, DEP_ESTADUAL, DEP_FEDERAL, GOVERNADOR, ITAPIRA, NULO,
                      PRESIDENTE, SENADOR, curto)
-from ui import AZUL, CINZA_CLARO, MARINHO, OUTROS, SERIES
 
 st.set_page_config(page_title="Itapira 2026 · análise da votação", page_icon="🗳️", layout="wide",
                    initial_sidebar_state="collapsed")
-ui.estilo()
+# tema escolhido pelo visitante (escuro por padrão; o botão no topo alterna)
+ESCURO = (st.context.theme.type or "dark") != "light"
+ui.estilo(ESCURO)
+SERIES, OUTROS, CINZA_CLARO, AZUL, FUNDO = ui.SERIES, ui.OUTROS, ui.CINZA_CLARO, ui.AZUL, ui.FUNDO
+MARINHO = ui.DESTAQUE  # cor de destaque de Itapira nos gráficos (marinho no claro, amarelo no escuro)
 
 
 # ======================================================================= formatação
@@ -71,6 +74,7 @@ SENHA = segredo("senha")
 API_KEY = segredo("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
 
 if SENHA and not st.session_state.get("autenticado"):
+    ui.botao_tema(ESCURO)
     ui.hero("Acesso restrito", "Análise da votação", "Digite a senha para entrar")
     with st.form("login"):
         digitada = st.text_input("Senha", type="password")
@@ -213,14 +217,24 @@ COL_PP = lambda nome: st.column_config.NumberColumn(nome, format="%+.1f")  # noq
 COL_NUM = lambda nome: st.column_config.NumberColumn(nome, format="localized")  # noqa: E731
 
 # ======================================================================= cabeçalho
+ui.botao_tema(ESCURO)
 ui.hero("O que os dados dizem", "Análise da votação", "Itapira comparada à região, ao estado e a 2022")
-total_pres = votos_cargo(PRESIDENTE)["QT_VOTOS"].sum()
 aptos = int(APTOS_SECAO.sum())
+
+
+def cartao_vencedor(cargo):
+    r = referencias(cargo)
+    n = r.loc["Itapira"].idxmax()
+    sit = str(ctx["situacao"].get((cargo, n), "")).lower()
+    return (f"{CARGOS[cargo]} · {nome_cand(cargo, n)}", pc(r.loc["Itapira", n]),
+            f"mais votado em Itapira · estado: {pc(r.loc['Estado de SP', n])}" + (f" · {sit}" if sit else ""))
+
+
 ui.kpis([
     ("Eleitores aptos", num(aptos), "161 seções · 22 locais de votação"),
     ("Votaram", num(votantes_secao().sum()), pc(votantes_secao().sum() / aptos * 100) + " de comparecimento"),
-    ("Cidades vizinhas usadas na comparação", str(len(ctx["vizinhas"])), "Mogi Mirim, Mogi Guaçu, Amparo…"),
-    ("Municípios de SP no ranking", "645", "fonte: TSE, dados por seção"),
+    cartao_vencedor(PRESIDENTE),
+    cartao_vencedor(GOVERNADOR),
 ])
 
 abas = st.tabs(["📌 Resumo", "🗺️ Onde cada um é forte", "🔁 2022 → 2026", "🔀 Voto entre cargos",
@@ -301,7 +315,7 @@ def cap_resumo():
     st.subheader("Onde Itapira fica entre os 645 municípios paulistas")
     c_alvo = r.loc["Itapira"].sort_values(ascending=False).index[0]
     dist = municipios_sp(cargo)[c_alvo]
-    fig = go.Figure(go.Histogram(x=dist, nbinsx=40, marker=dict(color=CINZA_CLARO, line=dict(width=1, color="#fff")),
+    fig = go.Figure(go.Histogram(x=dist, nbinsx=40, marker=dict(color=CINZA_CLARO, line=dict(width=1, color=FUNDO)),
                                  hovertemplate="%{x}: %{y} municípios<extra></extra>"))
     for x, rot, corl in [(dist[ITAPIRA], f"Itapira {pc(dist[ITAPIRA])}", MARINHO),
                          (r.loc["Estado de SP", c_alvo], f"Estado {pc(r.loc['Estado de SP', c_alvo])}", OUTROS)]:
@@ -513,7 +527,7 @@ def cap_mudanca():
                                  hoverinfo="skip", showlegend=False))
         fig.add_trace(go.Scatter(
             x=sec["a"], y=sec["b"], mode="markers", showlegend=False,
-            marker=dict(size=9, color=SERIES[0], opacity=.8, line=dict(width=1.5, color="#fff")),
+            marker=dict(size=9, color=SERIES[0], opacity=.8, line=dict(width=1.5, color=FUNDO)),
             customdata=np.c_[sec.index, BAIRRO.reindex(sec.index)],
             hovertemplate="<b>Seção %{customdata[0]}</b> · %{customdata[1]}<br>2022: %{x:.1f}%<br>"
                           "2026: %{y:.1f}%<extra></extra>"))
@@ -731,11 +745,11 @@ def cap_perfil():
         fig.add_shape(type="line", x0=r["esperado"], x1=r["real"], y0=cid, y1=cid, layer="below",
                       line=dict(color=CINZA_CLARO, width=3))
     fig.add_trace(go.Scatter(x=rg["esperado"], y=rg.index, mode="markers", name="Esperado pelo perfil",
-                             marker=dict(size=11, color="#ffffff", line=dict(width=2.5, color=OUTROS)),
+                             marker=dict(size=11, color=FUNDO, line=dict(width=2.5, color=OUTROS)),
                              hovertemplate="<b>%{y}</b><br>esperado: %{x:.1f}%<extra></extra>"))
     fig.add_trace(go.Scatter(x=rg["real"], y=rg.index, mode="markers+text", name="Resultado real",
                              marker=dict(size=12, color=[MARINHO if c == "Itapira" else AZUL for c in rg.index],
-                                         line=dict(width=2, color="#fff")),
+                                         line=dict(width=2, color=FUNDO)),
                              text=[pts(x).replace(" pontos", "").replace(" ponto", "") for x in rg["diferença"]],
                              textposition="middle right", cliponaxis=False,
                              hovertemplate="<b>%{y}</b><br>real: %{x:.1f}%<extra></extra>"))
