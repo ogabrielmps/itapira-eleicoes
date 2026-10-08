@@ -9,9 +9,12 @@ Saídas em data/contexto/:
   candidatos_2026.parquet   CD_CARGO x NR_VOTAVEL -> NM_VOTAVEL, nome de urna, partido e situação
                             (cadastro de candidaturas do TSE; SP e Presidente)
   municipios.parquet        CD_MUNICIPIO -> NM_MUNICIPIO, SG_UF, aptos 2026 e 2022
+  perfil_mun.parquet        perfil do eleitorado apto por município de SP (somas: idade, sexo,
+                            escolaridade, estado civil)
 
 Uso:  python etl/preparar_contexto.py                  (lê os zips de data/raw; leva alguns minutos)
       python etl/preparar_contexto.py --candidatos     (só atualiza o cadastro de candidaturas)
+      python etl/preparar_contexto.py --perfil         (só o perfil do eleitorado por município)
 """
 import sys
 import zipfile
@@ -75,7 +78,36 @@ def salvar_candidatos(cand_votos: pd.DataFrame) -> None:
     print(f"Candidatos: {len(cand)} ({cand['NM_URNA'].notna().sum()} com nome de urna)")
 
 
+def perfil_municipios() -> None:
+    """Soma do perfil do eleitorado apto por município de SP (mesmas medidas do painel)."""
+    zp = baixar(f"{CDN}/perfil_eleitor_secao/perfil_eleitor_secao_2026_SP.zip")
+    cols = ["CD_MUNICIPIO", "DS_GENERO", "DS_ESTADO_CIVIL", "CD_FAIXA_ETARIA", "CD_GRAU_ESCOLARIDADE",
+            "QT_ELEITORES"]
+    partes = []
+    with zipfile.ZipFile(zp) as z, z.open("perfil_eleitor_secao_2026_SP.csv") as f:
+        for bloco in pd.read_csv(f, sep=";", encoding="latin-1", usecols=cols, chunksize=2_000_000):
+            partes.append(bloco.groupby(cols[:-1])["QT_ELEITORES"].sum().reset_index())
+    p = pd.concat(partes).groupby(cols[:-1])["QT_ELEITORES"].sum().reset_index()
+    p["CD_MUNICIPIO"] = p["CD_MUNICIPIO"].astype(int)
+    fx = p["CD_FAIXA_ETARIA"]
+    idade = (fx // 100).where(fx < 2100, (fx // 100 + (fx % 100).clip(upper=100)) / 2)
+    q = p["QT_ELEITORES"]
+    out = pd.DataFrame({
+        "CD_MUNICIPIO": p["CD_MUNICIPIO"], "QT_ELEITORES": q, "w_idade": idade * q,
+        "jovens": q * (idade < 30), "idosos": q * (idade >= 60),
+        "mulheres": q * (p["DS_GENERO"] == "FEMININO"),
+        "superior": q * (p["CD_GRAU_ESCOLARIDADE"] >= 7),
+        "fundamental": q * (p["CD_GRAU_ESCOLARIDADE"] <= 4),
+        "casados": q * (p["DS_ESTADO_CIVIL"] == "CASADO"),
+    }).groupby("CD_MUNICIPIO").sum()
+    out.reset_index().to_parquet(OUT / "perfil_mun.parquet", index=False)
+    print(f"Perfil: {len(out)} municípios, {int(out['QT_ELEITORES'].sum()):,} eleitores")
+
+
 def main() -> None:
+    if "--perfil" in sys.argv:
+        perfil_municipios()
+        return
     if "--candidatos" in sys.argv:
         atual = pd.read_parquet(OUT / "candidatos_2026.parquet")
         salvar_candidatos(atual[["CD_CARGO", "NR_VOTAVEL", "NM_VOTAVEL"]])
@@ -112,6 +144,7 @@ def main() -> None:
     cols = ["CD_MUNICIPIO", "NR_TURNO", "CD_CARGO", "NR_VOTAVEL", "QT_VOTOS"]
     v26[cols].to_parquet(OUT / "votos_mun_2026.parquet", index=False)
     v22[cols].to_parquet(OUT / "votos_mun_2022.parquet", index=False)
+    perfil_municipios()
 
     print(f"Municípios: {len(mun)} · linhas 2026: {len(v26):,} · linhas 2022: {len(v22):,}")
     for f in sorted(OUT.iterdir()):

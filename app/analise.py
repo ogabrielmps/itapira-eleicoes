@@ -142,6 +142,8 @@ def carregar_contexto():
         "partido": cand.set_index(idx)["SG_PARTIDO"],
         "situacao": cand.set_index(idx)["SITUACAO"].map(SITUACOES),
         "sigla": sigla,
+        "perfil": (pd.read_parquet(CONTEXTO_DIR / "perfil_mun.parquet").set_index("CD_MUNICIPIO")
+                   if (CONTEXTO_DIR / "perfil_mun.parquet").exists() else None),
     }
 
 
@@ -221,6 +223,52 @@ def brancos_nulos_ref(ctx) -> pd.DataFrame:
                        "Itapira": c[bn & it]["QT_VOTOS"].sum() / c[it]["QT_VOTOS"].sum() * 100,
                        "Estado de SP": c[bn]["QT_VOTOS"].sum() / c["QT_VOTOS"].sum() * 100})
     return pd.DataFrame(linhas).set_index("Cargo")
+
+
+# ======================================================================= perfil: cidades
+def perfil_ref(ctx) -> pd.DataFrame:
+    """Indicadores de perfil (eleitores aptos) de Itapira, das vizinhas e do estado."""
+    pm = ctx["perfil"]
+    grupos = {"Itapira": [ITAPIRA], "Cidades vizinhas": ctx["vizinhas"], "Estado de SP": list(pm.index)}
+    return pd.DataFrame({k: indicadores(pm.loc[v].sum().to_frame().T).iloc[0] for k, v in grupos.items()})
+
+
+PREDITORES = ["Idade média", "% com ensino superior", "% de mulheres"]
+
+
+def esperado_pelo_perfil(ctx, cargo: int, nr: int) -> tuple[pd.DataFrame, float]:
+    """Resultado 'esperado' de cada município de SP só pelo perfil do eleitorado.
+
+    Regressão linear simples entre os 645 municípios (cada cidade conta igual): % do candidato
+    explicado por idade média, % com ensino superior e % de mulheres. Devolve real x esperado e o R².
+    """
+    y = pct_municipios_sp(ctx, cargo)[nr]
+    X = indicadores(ctx["perfil"])[PREDITORES]
+    d = X.join(y.rename("real")).dropna()
+    M = np.c_[np.ones(len(d)), d[PREDITORES].values]
+    coef, *_ = np.linalg.lstsq(M, d["real"].values, rcond=None)
+    d["esperado"] = M @ coef
+    res = d["real"] - d["esperado"]
+    r2 = 1 - (res ** 2).sum() / ((d["real"] - d["real"].mean()) ** 2).sum()
+    return d[["real", "esperado"]], r2
+
+
+# ======================================================================= voto entre cargos
+def por_100_eleitores(ctx, alvos: list[tuple[int, int]]) -> pd.DataFrame:
+    """Votos de cada (cargo, número) a cada 100 eleitores que votaram, em Itapira, vizinhas e SP.
+
+    A base é o total de votos para Governador (cada eleitor dá exatamente 1 voto para esse cargo)."""
+    v = ctx["v26"]
+    v = v[(v["NR_TURNO"] == 1) & (v["CD_MUNICIPIO"].map(ctx["mun"]["SG_UF"]) == "SP")]
+    grupos = {"Itapira": v["CD_MUNICIPIO"] == ITAPIRA, "Cidades vizinhas": v["CD_MUNICIPIO"].isin(ctx["vizinhas"]),
+              "Estado de SP": pd.Series(True, index=v.index)}
+    out = {}
+    for g, m in grupos.items():
+        vv = v[m]
+        base = vv[vv["CD_CARGO"] == GOVERNADOR]["QT_VOTOS"].sum()
+        soma = vv.groupby(["CD_CARGO", "NR_VOTAVEL"])["QT_VOTOS"].sum()
+        out[g] = {a: soma.get(a, 0) / base * 100 for a in alvos}
+    return pd.DataFrame(out)
 
 
 # ======================================================================= estatística simples

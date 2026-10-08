@@ -17,13 +17,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 from streamlit_folium import st_folium
 
 import analise as A
 import insights
 import ui
-from analise import (CARGOS, DEP_ESTADUAL, DEP_FEDERAL, GOVERNADOR, ITAPIRA,
+from analise import (BRANCO, CARGOS, DEP_ESTADUAL, DEP_FEDERAL, GOVERNADOR, ITAPIRA, NULO,
                      PRESIDENTE, SENADOR, curto)
 from ui import AZUL, CINZA_CLARO, MARINHO, OUTROS, SERIES
 
@@ -464,8 +463,8 @@ def cap_mudanca():
         f"**{pc(tab.loc['Itapira', '13 em 2026'])}** ({pts(tab.loc['Itapira', 'Variação do 13'])}); no estado, "
         f"{pts(tab.loc['Estado de SP', 'Variação do 13'])}.",
         f"Entre Itapira e as 16 cidades vizinhas, Itapira teve a **{pos_reg}ª maior** variação do 22 "
-        f"(maior: {ctx['mun'].loc[var_cid.index[0], 'NM_MUNICIPIO'].title()}, {pts(var_cid.iloc[0])}; menor: "
-        f"{ctx['mun'].loc[var_cid.index[-1], 'NM_MUNICIPIO'].title()}, {pts(var_cid.iloc[-1])}).",
+        f"(maior: {A.nome(ctx['mun'].loc[var_cid.index[0], 'NM_MUNICIPIO'])}, {pts(var_cid.iloc[0])}; menor: "
+        f"{A.nome(ctx['mun'].loc[var_cid.index[-1], 'NM_MUNICIPIO'])}, {pts(var_cid.iloc[-1])}).",
         f"**Os redutos não mudaram:** as seções onde o 22 era forte em 2022 continuaram sendo as mais fortes "
         f"(correlação de {dec(r_estab)} entre 2022 e 2026)." if r_estab >= .7 else
         f"**O mapa mudou:** a correlação entre as seções de 2022 e 2026 é só {dec(r_estab)}.",
@@ -485,7 +484,7 @@ def cap_mudanca():
                     indice="Onde")
 
     st.subheader("Variação do 22 nas cidades da região")
-    nomes = [ctx["mun"].loc[c, "NM_MUNICIPIO"].title() for c in var_cid.index]
+    nomes = [A.nome(ctx["mun"].loc[c, "NM_MUNICIPIO"]) for c in var_cid.index]
     ui.barras_h(var_cid.values[::-1], nomes[::-1],
                 [MARINHO if c == ITAPIRA else CINZA_CLARO for c in var_cid.index[::-1]],
                 [pts(x).replace(" pontos", "").replace(" ponto", "") for x in var_cid.values[::-1]],
@@ -536,19 +535,90 @@ def cap_mudanca():
 # ======================================================================= 4. voto entre cargos
 def cap_cargos():
     rp, rg, rs = ranking_itapira(PRESIDENTE), ranking_itapira(GOVERNADOR), ranking_itapira(SENADOR)
-    pares = {
-        f"{curto(nome_cand(PRESIDENTE, rp.index[0]))} × {curto(nome_cand(GOVERNADOR, rg.index[0]))}":
-            ((PRESIDENTE, rp.index[0]), (GOVERNADOR, rg.index[0])),
-        f"{curto(nome_cand(PRESIDENTE, rp.index[1]))} × {curto(nome_cand(GOVERNADOR, rg.index[1]))}":
-            ((PRESIDENTE, rp.index[1]), (GOVERNADOR, rg.index[1])),
-        f"{curto(nome_cand(PRESIDENTE, rp.index[0]))} × {curto(nome_cand(SENADOR, rs.index[0]))} (Senado)":
-            ((PRESIDENTE, rp.index[0]), (SENADOR, rs.index[0])),
-        f"{curto(nome_cand(PRESIDENTE, rp.index[0]))} × {curto(nome_cand(SENADOR, rs.index[1]))} (Senado)":
-            ((PRESIDENTE, rp.index[0]), (SENADOR, rs.index[1])),
-        "Escolher outro par": None,
-    }
-    escolha = st.radio("Comparar", list(pares), horizontal=True, key="car_par")
-    if pares[escolha] is None:
+    p1, p2, g1, g2 = rp.index[0], rp.index[1], rg.index[0], rg.index[1]
+    s_top = list(rs.index[:4])
+    linhas = ([(PRESIDENTE, p1), (PRESIDENTE, p2)] + [(GOVERNADOR, g1), (GOVERNADOR, g2)]
+              + [(SENADOR, n) for n in s_top])
+    bn = [(c, n) for c in (PRESIDENTE, GOVERNADOR, SENADOR) for n in (BRANCO, NULO)]
+    t = A.por_100_eleitores(ctx, linhas + bn)
+    nm = lambda c, n: curto(nome_cand(c, n))  # noqa: E731
+    it = t["Itapira"]
+
+    def gap(a, b, onde="Itapira"):
+        return t.loc[[b], onde].iloc[0] - t.loc[[a], onde].iloc[0]
+
+    d1, d2 = gap((PRESIDENTE, p1), (GOVERNADOR, g1)), gap((PRESIDENTE, p2), (GOVERNADOR, g2))
+    d1_sp, d1_viz = gap((PRESIDENTE, p1), (GOVERNADOR, g1), "Estado de SP"), gap((PRESIDENTE, p1), (GOVERNADOR, g1), "Cidades vizinhas")
+    d2_sp = gap((PRESIDENTE, p2), (GOVERNADOR, g2), "Estado de SP")
+    vot = votantes_secao().sum()
+    falta = abs(d1) / 100 * vot
+    brancos = {c: it[(c, BRANCO)] + it[(c, NULO)] for c in (PRESIDENTE, GOVERNADOR, SENADOR)}
+
+    def por100(x):
+        return f"{x:.0f}".replace(".", ",")
+
+    mais_g = nm(GOVERNADOR, g1) if d1 > 0 else nm(PRESIDENTE, p1)
+    texto = (f"Quase: a cada 100 eleitores, {por100(it[(PRESIDENTE, p1)])} votaram em {nm(PRESIDENTE, p1)} para presidente, "
+             f"{por100(it[(GOVERNADOR, g1)])} em {nm(GOVERNADOR, g1)} para governador e cerca de "
+             f"{por100(it[(SENADOR, s_top[0])])} em cada um dos dois mais votados para o Senado.")
+    args = [
+        f"**{nm(PRESIDENTE, p1)} × {nm(GOVERNADOR, g1)}:** {mais_g} teve **{dec(abs(d1), 1)} votos a mais a cada 100 "
+        f"eleitores**. Como cada eleitor dá no máximo um voto a cada candidato, isso quer dizer que pelo menos "
+        f"~{num(round(falta, -1))} pessoas votaram em um e não no outro.",
+        f"**Comparando com fora:** essa diferença foi de {dec(abs(d1_viz), 1)} nas cidades vizinhas e de "
+        f"{dec(abs(d1_sp), 1)} no estado. "
+        + ("Em Itapira, o voto para presidente e governador ficou **mais alinhado** que no estado."
+           if abs(d1) < abs(d1_sp) - 0.5 else
+           "Em Itapira, o voto para presidente e governador ficou **menos alinhado** que no estado."
+           if abs(d1) > abs(d1_sp) + 0.5 else "Itapira seguiu o padrão do estado."),
+        f"**{nm(PRESIDENTE, p2)} × {nm(GOVERNADOR, g2)}:** {por100(it[(PRESIDENTE, p2)])} e "
+        f"{por100(it[(GOVERNADOR, g2)])} a cada 100 eleitores; diferença de {dec(abs(d2), 1)} (no estado, {dec(abs(d2_sp), 1)}).",
+        f"**Senado:** {nm(SENADOR, s_top[0])} e {nm(SENADOR, s_top[1])} tiveram votações quase idênticas "
+        f"({por100(it[(SENADOR, s_top[0])])} e {por100(it[(SENADOR, s_top[1])])} a cada 100 eleitores). Como as duas "
+        f"somam mais de 100, **pelo menos {por100(max(0, it[(SENADOR, s_top[0])] + it[(SENADOR, s_top[1])] - 100))} "
+        "a cada 100 eleitores votaram nos dois** (o número real provavelmente é bem maior). "
+        f"{nm(SENADOR, s_top[2])} e {nm(SENADOR, s_top[3])} tiveram {por100(it[(SENADOR, s_top[2])])} e "
+        f"{por100(it[(SENADOR, s_top[3])])}.",
+        f"**Brancos e nulos crescem fora da disputa presidencial:** {por100(brancos[PRESIDENTE])} a cada 100 eleitores "
+        f"para presidente, {por100(brancos[GOVERNADOR])} para governador e {por100(brancos[SENADOR])} votos para senador "
+        f"(cada eleitor tinha 2 votos para o Senado). No estado: {por100(t.loc[[(PRESIDENTE, BRANCO)], 'Estado de SP'].iloc[0] + t.loc[[(PRESIDENTE, NULO)], 'Estado de SP'].iloc[0])}, "
+        f"{por100(t.loc[[(GOVERNADOR, BRANCO)], 'Estado de SP'].iloc[0] + t.loc[[(GOVERNADOR, NULO)], 'Estado de SP'].iloc[0])} e "
+        f"{por100(t.loc[[(SENADOR, BRANCO)], 'Estado de SP'].iloc[0] + t.loc[[(SENADOR, NULO)], 'Estado de SP'].iloc[0])}.",
+    ]
+    ui.resposta("O eleitor de Itapira votou do mesmo jeito para presidente, governador e senador?", texto, args)
+
+    st.subheader("A cada 100 eleitores que votaram")
+    tab = t.loc[linhas].copy()
+    tab.index = [f"{CARGOS[c]} · {nome_cand(c, n)}" for c, n in linhas]
+    for c in (PRESIDENTE, GOVERNADOR, SENADOR):
+        tab.loc[f"{CARGOS[c]} · brancos e nulos"] = t.loc[[(c, BRANCO), (c, NULO)]].sum()
+    ordem = [i for c in (PRESIDENTE, GOVERNADOR, SENADOR) for i in tab.index if i.startswith(CARGOS[c])]
+    tab = tab.loc[ordem]
+    tab["Itapira − estado"] = tab["Itapira"] - tab["Estado de SP"]
+    tabela_progress(tab, {c: 100 for c in ["Itapira", "Cidades vizinhas", "Estado de SP"]},
+                    {"Itapira − estado": COL_PP("Itapira − estado")}, indice="Cargo e candidato")
+    ui.nota("Base: todas as pessoas que votaram (inclui quem votou em branco ou anulou), o que permite comparar "
+            "cargos diferentes na mesma régua. Para o Senado cada eleitor tinha 2 votos, então a soma passa de 100.")
+
+    st.subheader("Por bairro")
+    vs = votos[votos["CD_CARGO"].isin([PRESIDENTE, GOVERNADOR])].assign(B=lambda d: d["NR_SECAO"].map(BAIRRO))
+    base_b = vs[vs["CD_CARGO"] == GOVERNADOR].groupby("B")["QT_VOTOS"].sum()
+
+    def col(c, n):
+        return vs[(vs["CD_CARGO"] == c) & (vs["NR_VOTAVEL"] == n)].groupby("B")["QT_VOTOS"].sum() / base_b * 100
+
+    tb = pd.DataFrame({nm(PRESIDENTE, p1): col(PRESIDENTE, p1), nm(GOVERNADOR, g1): col(GOVERNADOR, g1),
+                       f"Diferença {nm(GOVERNADOR, g1)} − {nm(PRESIDENTE, p1)}": col(GOVERNADOR, g1) - col(PRESIDENTE, p1),
+                       nm(PRESIDENTE, p2): col(PRESIDENTE, p2), nm(GOVERNADOR, g2): col(GOVERNADOR, g2),
+                       f"Diferença {nm(GOVERNADOR, g2)} − {nm(PRESIDENTE, p2)}": col(GOVERNADOR, g2) - col(PRESIDENTE, p2)})
+    dcol = tb.columns[2]
+    tb = tb.sort_values(dcol, ascending=False)
+    tabela_progress(tb, {c: 100 for c in tb.columns if not c.startswith("Diferença")},
+                    {c: COL_PP(c) for c in tb.columns if c.startswith("Diferença")}, indice="Bairro")
+    ui.nota(f"Também a cada 100 eleitores que votaram no bairro. Bairros no topo: onde {nm(GOVERNADOR, g1)} mais se "
+            f"descolou de {nm(PRESIDENTE, p1)}.")
+
+    with st.expander("Comparar outro par de candidatos"):
         ca, cb = st.columns(2)
         with ca:
             cargo_a = st.selectbox("Cargo A", [PRESIDENTE, GOVERNADOR, SENADOR], format_func=CARGOS.get, key="car_ca")
@@ -556,150 +626,147 @@ def cap_cargos():
         with cb:
             cargo_b = st.selectbox("Cargo B", [GOVERNADOR, SENADOR, PRESIDENTE], format_func=CARGOS.get, key="car_cb")
             nr_b = seletor_candidato(cargo_b, f"car_b_{cargo_b}")
-    else:
-        (cargo_a, nr_a), (cargo_b, nr_b) = pares[escolha]
-    na, nb = curto(nome_cand(cargo_a, nr_a)), curto(nome_cand(cargo_b, nr_b))
-
-    def por_secao(cargo, nr):
-        return votos_cargo(cargo)[votos_cargo(cargo)["NR_VOTAVEL"] == nr].groupby("NR_SECAO")["QT_VOTOS"].sum()
-
-    va, vb = por_secao(cargo_a, nr_a), por_secao(cargo_b, nr_b)
-    vot = votantes_secao()
-    tot_a, tot_b, tot_v = va.sum(), vb.sum(), vot.sum()
-    dif = tot_b - tot_a
-    por100 = dif / tot_v * 100
-    sec = pd.DataFrame({"a": va, "b": vb, "v": vot}).fillna(0)
-    r = (sec["a"] / sec["v"]).corr(sec["b"] / sec["v"])
-    g = sec.join(BAIRRO).groupby("BAIRRO").sum()
-    g["d100"] = (g["b"] - g["a"]) / g["v"] * 100
-
-    # estado: diferença por 100 eleitores
-    v26 = ctx["v26"]
-    sp = v26[(v26["CD_MUNICIPIO"].map(ctx["mun"]["SG_UF"]) == "SP") & (v26["NR_TURNO"] == 1)]
-    sp_a = sp[(sp["CD_CARGO"] == cargo_a) & (sp["NR_VOTAVEL"] == nr_a)]["QT_VOTOS"].sum()
-    sp_b = sp[(sp["CD_CARGO"] == cargo_b) & (sp["NR_VOTAVEL"] == nr_b)]["QT_VOTOS"].sum()
-    sp_v = sp[sp["CD_CARGO"] == GOVERNADOR]["QT_VOTOS"].sum()
-    sp100 = (sp_b - sp_a) / sp_v * 100
-
-    mais, menos = (nb, na) if dif > 0 else (na, nb)
-    texto = (f"{mais} teve {num(abs(dif))} votos a mais que {menos}: pelo menos {num(abs(dif))} eleitores "
-             f"votaram em {mais} sem votar em {menos}.")
-    args = [
-        f"**{na}** ({CARGOS[cargo_a]}): {num(tot_a)} votos · **{nb}** ({CARGOS[cargo_b]}): {num(tot_b)} votos, "
-        f"entre {num(tot_v)} eleitores que votaram.",
-        "**Por que \"pelo menos\":** o voto é secreto, mas cada eleitor dá no máximo um voto a cada candidato. "
-        f"Então, se {mais} teve {num(abs(dif))} votos a mais, no mínimo esse número de pessoas votou nele e não "
-        f"em {menos}. O número real pode ser maior, porque trocas nos dois sentidos se compensam.",
-        f"**Por 100 eleitores:** em Itapira, {mais} teve {dec(abs(por100), 1)} votos a mais a cada 100 eleitores; "
-        f"no estado, a diferença foi de {dec(sp100, 1)} a favor de "
-        f"{nb if sp100 > 0 else na}.",
-        f"**Mesma base?** A correlação entre os dois, seção a seção, é de {dec(r)}: "
-        + ("eles vão bem nos mesmos lugares." if r >= .7 else
-           "eles têm bases parcialmente diferentes." if r >= .3 else "eles têm bases bem diferentes."),
-        f"**Onde a diferença foi maior:** {g['d100'].idxmax()} ({dec(g['d100'].max(), 1)} por 100 eleitores); "
-        f"**menor:** {g['d100'].idxmin()} ({dec(g['d100'].min(), 1)}).",
-    ]
-    if SENADOR in (cargo_a, cargo_b):
-        args.append("Para Senador cada eleitor podia votar em 2 candidatos; o raciocínio do \"pelo menos\" continua "
-                    "valendo, porque ninguém vota duas vezes no mesmo candidato.")
-    ui.resposta(f"Quem votou em {na} também votou em {nb}?", texto, args)
-
-    st.subheader(f"Diferença {nb} − {na} por bairro")
-    g = g.sort_values("d100")
-    ui.barras_h(g["d100"].values, g.index, [SERIES[1] if x > 0 else SERIES[0] for x in g["d100"]],
-                [("+" if x > 0 else "") + dec(x, 1) for x in g["d100"]],
-                "<b>%{y}</b><br>%{x:+.1f} por 100 eleitores<extra></extra>",
-                f"votos a mais para {nb} (→) ou para {na} (←), a cada 100 eleitores", por100,
-                f"cidade {('+' if por100 > 0 else '')}{dec(por100, 1)}")
-    ui.nota(f"<span style='color:{SERIES[1]}'>●</span> {nb} teve mais votos · "
-            f"<span style='color:{SERIES[0]}'>●</span> {na} teve mais votos. "
-            "A medida é a diferença de votos dividida pelo número de pessoas que votaram no bairro.")
-    leitura_ia(f"car_{cargo_a}_{nr_a}_{cargo_b}_{nr_b}", f"Voto entre cargos em Itapira: {na} × {nb}", args)
+        if (cargo_a, nr_a) == (cargo_b, nr_b):
+            st.info("Escolha dois candidatos diferentes.")
+            return
+        par = A.por_100_eleitores(ctx, [(cargo_a, nr_a), (cargo_b, nr_b)])
+        par.index = [f"{CARGOS[cargo_a]} · {nome_cand(cargo_a, nr_a)}", f"{CARGOS[cargo_b]} · {nome_cand(cargo_b, nr_b)}"]
+        par.loc["Diferença (B − A)"] = par.iloc[1] - par.iloc[0]
+        st.dataframe(par.round(1), width="stretch")
+        dif = par.loc["Diferença (B − A)", "Itapira"]
+        st.markdown(f"Em Itapira, a diferença é de **{dec(abs(dif), 1)} votos a cada 100 eleitores**: pelo menos "
+                    f"~{num(round(abs(dif) / 100 * vot, -1))} pessoas votaram em "
+                    f"{nome_cand(cargo_b, nr_b) if dif > 0 else nome_cand(cargo_a, nr_a)} e não em "
+                    f"{nome_cand(cargo_a, nr_a) if dif > 0 else nome_cand(cargo_b, nr_b)}.")
+    leitura_ia("cargos", "Voto entre cargos em Itapira (presidente, governador e senado)", args)
 
 
 # ======================================================================= 5. perfil
 def cap_perfil():
     c1, c2 = st.columns([1, 1.6])
-    cargo = c1.selectbox("Cargo", list(CARGOS), format_func=CARGOS.get, key="per_cargo")
+    cargo = c1.selectbox("Cargo", [PRESIDENTE, GOVERNADOR, SENADOR], format_func=CARGOS.get, key="per_cargo")
     with c2:
         nr = seletor_candidato(cargo, f"per_cand_{cargo}")
     nm = curto(nome_cand(cargo, nr))
+
+    # --- cidades: perfil e "esperado pelo perfil"
+    pr = A.perfil_ref(ctx)
+    ref = referencias(cargo)
+    dif_sp = ref.loc["Itapira", nr] - ref.loc["Estado de SP", nr]
+    esp, r2 = A.esperado_pelo_perfil(ctx, cargo, nr)
+    esp["diferença"] = esp["real"] - esp["esperado"]
+    regiao = esp.loc[[ITAPIRA] + ctx["vizinhas"]]
+    acima_reg = (regiao["diferença"] > 0).sum()
+    e_it = esp.loc[ITAPIRA]
+    perfil_dif = (pr["Itapira"] - pr["Estado de SP"]).drop("Eleitores")
+    maior_dif = perfil_dif.abs().idxmax()
+
+    # --- dentro da cidade: seções com mais x menos de cada característica
     v = A.validos(votos_cargo(cargo))
     vs = v.pivot_table(index="NR_SECAO", columns="NR_VOTAVEL", values="QT_VOTOS", aggfunc="sum", fill_value=0)
-    y = vs[nr] / vs.sum(axis=1) * 100
     ind = A.indicadores(perfil_secao)
-
     linhas = []
-    for nome_i, (_, alto, baixo, _u) in A.INDICADORES.items():
-        r, r2 = A.r2_simples(ind[nome_i], y)
-        linhas.append({"ind": nome_i, "r": r, "r2": r2 * 100, "onde": alto if r > 0 else baixo})
-    exp = pd.DataFrame(linhas).set_index("ind").sort_values("r2", ascending=False)
-    multi = A.r2_multiplo(ind[["Idade média", "% com ensino superior", "% de mulheres", "% de casados"]], y) * 100
-    melhor = exp.index[0]
-    m = exp.iloc[0]
+    for nome_i, (_, alto, baixo, un) in A.INDICADORES.items():
+        res, fx = A.tercos(ind[nome_i], vs, [nr])
+        linhas.append({"Característica": nome_i, "alto": alto, "baixo": baixo,
+                       "Seções com mais": res.loc[2, nr], "Seções com menos": res.loc[0, nr],
+                       "faixa_mais": f"{fx[2][0]:.0f}–{fx[2][1]:.0f}{un}".replace(".", ","),
+                       "faixa_menos": f"{fx[0][0]:.0f}–{fx[0][1]:.0f}{un}".replace(".", ",")})
+    sec = pd.DataFrame(linhas).set_index("Característica")
+    sec["Diferença (pontos)"] = sec["Seções com mais"] - sec["Seções com menos"]
+    sec = sec.reindex(sec["Diferença (pontos)"].abs().sort_values(ascending=False).index)
+    top = sec.iloc[0]
+    # características que andam juntas (ex.: idade e estado civil)
+    corr_ind = ind[list(A.INDICADORES)].corr()
+    par_junto = corr_ind.loc[sec.index[0], sec.index[1]] if len(sec) > 1 else 0
 
-    if m["r2"] < 10:
-        texto = (f"Pouco. Nenhuma característica do eleitorado explica mais que 10% das diferenças de voto em "
-                 f"{nm} entre as seções; o voto foi parecido em perfis diferentes.")
-    else:
-        grau = "Em parte" if m["r2"] < 30 else "Bastante"
-        texto = (f"{grau}: {NOME_FRASE[melhor]} é o que mais separa as seções. "
-                 f"{nm} vai melhor onde há {m['onde']}.")
-    top_c = list(vs.sum().sort_values(ascending=False).index[:3])
-    if nr not in top_c:
-        top_c = [nr] + top_c[:2]
-    res, faixas = A.tercos(ind[melhor], vs, top_c)
-    un = A.INDICADORES[melhor][3]
-    fx = lambda f: f"{f[0]:.0f} a {f[1]:.0f}{un}".replace(".", ",")  # noqa: E731
+    texto = (f"Pouco. Itapira tem um eleitorado parecido com o do estado, mas deu a {nm} "
+             f"{pts(abs(dif_sp), False)} {'a mais' if dif_sp > 0 else 'a menos'}. E, dentro da cidade, seções de "
+             f"perfis bem diferentes votaram de forma parecida.") if abs(top["Diferença (pontos)"]) < 6 else (
+             f"Em parte. Dentro da cidade, {NOME_FRASE[sec.index[0]]} faz diferença: {pts(abs(top['Diferença (pontos)']), False)} "
+             f"entre as seções com mais e com menos.")
     args = [
-        f"**{NOME_FRASE[melhor].capitalize()}** explica **{pc(m['r2'], 0)}** das diferenças entre seções (correlação {dec(m['r'])}): "
-        f"mais votos para {nm} onde há {m['onde']}.",
-        f"Na prática: nas seções com {A.INDICADORES[melhor][1]} ({fx(faixas[2])}), {nm} teve "
-        f"**{pc(res.loc[2, nr])}**; nas com {A.INDICADORES[melhor][2]} ({fx(faixas[0])}), **{pc(res.loc[0, nr])}**.",
-    ] + [
-        f"{NOME_FRASE[i].capitalize()} explica {pc(exp.loc[i, 'r2'], 0)} (mais votos onde há {exp.loc[i, 'onde']})."
-        for i in exp.index[1:3]
-    ] + [
-        f"**Juntas**, idade, escolaridade, sexo e estado civil explicam **{pc(multi, 0)}** das diferenças entre "
-        f"seções; o resto ({pc(100 - multi, 0)}) depende de fatores que estes dados não mostram.",
-        "**Limitação:** o perfil é dos eleitores aptos de cada seção, não de quem votou, e a comparação é entre "
-        "seções, não entre pessoas. Não dá para concluir, por exemplo, que \"os idosos votaram em X\".",
+        f"**Perfil de Itapira × estado:** idade média de {dec(pr.loc['Idade média', 'Itapira'], 1)} anos (estado: "
+        f"{dec(pr.loc['Idade média', 'Estado de SP'], 1)}), {pc(pr.loc['% com ensino superior', 'Itapira'])} com ensino "
+        f"superior (estado: {pc(pr.loc['% com ensino superior', 'Estado de SP'])}). A maior diferença é em "
+        f"{maior_dif.lower()}: {pc(pr.loc[maior_dif, 'Itapira'])} contra {pc(pr.loc[maior_dif, 'Estado de SP'])}.",
+        f"**Se o perfil decidisse o voto:** usando idade, escolaridade e sexo dos 645 municípios paulistas, o "
+        f"resultado esperado para {nm} em Itapira seria **{pc(e_it['esperado'])}**. O real foi **{pc(e_it['real'])}** "
+        f"({pts(e_it['diferença'])}).",
+        f"**É um efeito da região:** em {acima_reg} das {len(regiao)} cidades da região (Itapira e as 16 vizinhas), "
+        f"{nm} ficou {'acima' if regiao['diferença'].mean() > 0 else 'abaixo'} do esperado pelo perfil, em média "
+        f"{pts(abs(regiao['diferença'].mean()), False)}. O que mais se parece com o voto de Itapira é o voto dos vizinhos, "
+        "não o perfil dos eleitores.",
+        f"**O perfil explica pouco também no estado:** as três características juntas dão conta de só "
+        f"{pc(r2 * 100, 0)} das diferenças de voto entre os municípios paulistas.",
+        f"**Dentro de Itapira:** a maior diferença aparece em {sec.index[0].lower()}. Nas seções com "
+        f"{top['alto']} ({top['faixa_mais']}), {nm} teve **{pc(top['Seções com mais'])}**; nas com {top['baixo']} "
+        f"({top['faixa_menos']}), **{pc(top['Seções com menos'])}**.",
     ]
+    if abs(par_junto) >= .5:
+        args.append(f"**Cuidado:** {sec.index[0].lower()} e {sec.index[1].lower()} andam juntos nas seções "
+                    f"(correlação {dec(par_junto)}), então não dá para dizer qual dos dois pesa mais.")
+    args.append("**Limitação:** o perfil é dos eleitores aptos, e a comparação é entre lugares (seções e cidades), "
+                "não entre pessoas. Não dá para concluir que \"os mais velhos votaram em X\".")
     ui.resposta(f"O perfil do eleitorado explica o voto em {nm}?", texto, args)
 
-    st.subheader("Quanto cada característica explica")
-    e = exp.sort_values("r2")
-    ui.barras_h(e["r2"].values, e.index, [AZUL if x == melhor else CINZA_CLARO for x in e.index],
-                [f"{pc(x, 0)} · {'↑' if r > 0 else '↓'} onde há {o}" for x, r, o in zip(e["r2"], e["r"], e["onde"])],
-                "<b>%{y}</b><br>explica %{x:.0f}% das diferenças<extra></extra>",
-                "% das diferenças de voto entre seções explicado pela característica (R²)", faixa=[0, max(30, e["r2"].max() * 2.4)])
-    ui.nota("Como ler: se a característica explicasse 100%, saber o perfil de uma seção bastaria para prever o "
-            "voto nela; 0% significa que não ajuda nada. A seta mostra o sentido.")
+    st.subheader("Quem é o eleitor de Itapira")
+    t = pr.drop("Eleitores").copy()
+    t["Itapira − estado"] = t["Itapira"] - t["Estado de SP"]
+    idade = t.loc[["Idade média"]]
+    st.dataframe(
+        t.drop("Idade média").rename_axis("Característica").reset_index(), hide_index=True, width="stretch",
+        column_config={c: st.column_config.ProgressColumn(c, format="%.1f%%", min_value=0, max_value=60)
+                       for c in ["Itapira", "Cidades vizinhas", "Estado de SP"]}
+        | {"Itapira − estado": COL_PP("Itapira − estado (pontos)")})
+    ui.nota(f"Idade média: {dec(idade['Itapira'].iloc[0], 1)} anos em Itapira, {dec(idade['Cidades vizinhas'].iloc[0], 1)} "
+            f"nas vizinhas e {dec(idade['Estado de SP'].iloc[0], 1)} no estado. Perfil dos eleitores aptos (TSE, julho de 2026).")
 
-    st.subheader("Quem vai melhor onde")
-    ind_t = st.selectbox("Dividir as seções por", list(A.INDICADORES), index=list(A.INDICADORES).index(melhor),
-                         key=f"per_ind_{cargo}")
-    res, faixas = A.tercos(ind[ind_t], vs, top_c)
-    _, alto, baixo, un = A.INDICADORES[ind_t]
-    rot = [f"{f[0]:.0f}–{f[1]:.0f}{un}".replace(".", ",") for f in faixas]
-    fig = make_subplots(rows=1, cols=len(top_c), subplot_titles=[curto(nome_cand(cargo, c)) for c in top_c],
-                        horizontal_spacing=.08)
-    for i, c in enumerate(top_c, start=1):
-        yy = res[c].values
-        folga = max(1.5, (yy.max() - yy.min()) * .6)
-        corc = SERIES[i - 1]
-        fig.add_trace(go.Scatter(x=rot, y=yy, mode="lines+markers+text", line=dict(color=corc, width=2),
-                                 marker=dict(size=10, color=corc, line=dict(width=2, color="#fff")),
-                                 text=[pc(x) for x in yy], textposition="top center", cliponaxis=False,
-                                 hovertemplate="%{x}: %{y:.1f}%<extra></extra>", showlegend=False), row=1, col=i)
-        fig.update_yaxes(range=[yy.min() - folga, yy.max() + folga], ticksuffix="%", row=1, col=i)
-    fig.update_xaxes(type="category")
-    fig.update_layout(height=340, margin=dict(l=10, r=10, t=40, b=10))
+    st.subheader(f"Resultado real × esperado pelo perfil: {nm}")
+    rg = regiao.copy()
+    rg.index = [A.nome(ctx["mun"].loc[c, "NM_MUNICIPIO"]) for c in rg.index]
+    rg = rg.sort_values("diferença")
+    fig = go.Figure()
+    for cid, r in rg.iterrows():
+        fig.add_shape(type="line", x0=r["esperado"], x1=r["real"], y0=cid, y1=cid, layer="below",
+                      line=dict(color=CINZA_CLARO, width=3))
+    fig.add_trace(go.Scatter(x=rg["esperado"], y=rg.index, mode="markers", name="Esperado pelo perfil",
+                             marker=dict(size=11, color="#ffffff", line=dict(width=2.5, color=OUTROS)),
+                             hovertemplate="<b>%{y}</b><br>esperado: %{x:.1f}%<extra></extra>"))
+    fig.add_trace(go.Scatter(x=rg["real"], y=rg.index, mode="markers+text", name="Resultado real",
+                             marker=dict(size=12, color=[MARINHO if c == "Itapira" else AZUL for c in rg.index],
+                                         line=dict(width=2, color="#fff")),
+                             text=[pts(x).replace(" pontos", "").replace(" ponto", "") for x in rg["diferença"]],
+                             textposition="middle right", cliponaxis=False,
+                             hovertemplate="<b>%{y}</b><br>real: %{x:.1f}%<extra></extra>"))
+    fig.update_yaxes(type="category")
+    fig.update_layout(height=26 * len(rg) + 110, margin=dict(l=10, r=40, t=30, b=10),
+                      xaxis_title=f"% dos votos válidos de {nm}", legend=dict(orientation="h", y=1.06, x=0))
     ui.mostrar(fig)
-    ui.nota(f"As 161 seções foram divididas em três grupos do mesmo tamanho: da esquerda ({baixo}) para a direita "
-            f"({alto}). Linha subindo = o candidato vai melhor onde o indicador é mais alto. Cada painel tem a "
-            "sua própria escala.")
-    leitura_ia(f"per_{cargo}_{nr}", f"{CARGOS[cargo]}: perfil do eleitorado e voto em {nome_cand(cargo, nr)}", args)
+    ui.nota("Círculo vazio: o resultado que o perfil do eleitorado (idade, escolaridade, sexo) indicaria, calculado "
+            "com os 645 municípios de SP. Círculo cheio: o resultado real. O número é a diferença. Quando quase "
+            "todas as cidades da região ficam do mesmo lado, o motivo é regional, não o perfil.")
+
+    st.subheader("Dentro de Itapira: seções com mais × com menos de cada característica")
+    tsec = sec[["faixa_mais", "Seções com mais", "faixa_menos", "Seções com menos", "Diferença (pontos)"]].rename(
+        columns={"faixa_mais": "Faixa (mais)", "faixa_menos": "Faixa (menos)",
+                 "Seções com mais": f"{nm}: seções com mais", "Seções com menos": f"{nm}: seções com menos"})
+    teto = float(sec[["Seções com mais", "Seções com menos"]].max().max()) * 1.05
+    tabela_progress(tsec, {f"{nm}: seções com mais": teto, f"{nm}: seções com menos": teto},
+                    {"Diferença (pontos)": COL_PP("Diferença (pontos)")}, indice="Característica")
+    ui.nota("Para cada característica, as 161 seções foram ordenadas e divididas em três grupos iguais. A tabela "
+            "compara o terço com mais com o terço com menos. Diferenças de 1 a 3 pontos são pequenas: indicam voto "
+            "parecido em perfis diferentes.")
+
+    with st.expander("Perfil e voto de cada bairro"):
+        pb = A.indicadores(perfil_secao.groupby(BAIRRO).sum())
+        vb = A.pct_por(v.assign(B=v["NR_SECAO"].map(BAIRRO)), "B")[nr]
+        tb = pb[["Idade média", "% com 60 anos ou mais", "% com ensino superior", "Eleitores"]].join(vb.rename(f"% {nm}"))
+        tb = tb.sort_values(f"% {nm}", ascending=False)
+        tabela_progress(tb, {f"% {nm}": 100, "% com 60 anos ou mais": 50, "% com ensino superior": 50},
+                        {"Idade média": st.column_config.NumberColumn(format="%.1f"), "Eleitores": COL_NUM("Eleitores")},
+                        indice="Bairro")
+    leitura_ia(f"per_{cargo}_{nr}", f"{CARGOS[cargo]}: o perfil do eleitorado explica o voto em {nome_cand(cargo, nr)}?", args)
 
 
 # ======================================================================= 6. deputados
@@ -838,7 +905,7 @@ def cap_comparecimento():
 
 # ======================================================================= 8. metodologia
 def cap_metodologia():
-    viz = sorted(ctx["mun"].loc[ctx["vizinhas"], "NM_MUNICIPIO"].str.title())
+    viz = sorted(ctx["mun"].loc[ctx["vizinhas"], "NM_MUNICIPIO"].map(A.nome))
     st.markdown(f"""
 ### De onde vêm os dados
 Todos os números vêm do **Portal de Dados Abertos do TSE**:

@@ -127,12 +127,14 @@ def nota(texto: str):
 def mostrar(fig, altura: int | None = None):
     """Plotly com margem esquerda pelo maior rótulo (nomes longos de bairro não cortam)."""
     rotulos = [str(y) for t in fig.data if getattr(t, "y", None) is not None
-               and t.type in ("bar", "scatter") and getattr(t, "orientation", None) == "h"
+               and (t.type == "scatter" or getattr(t, "orientation", None) == "h")
                for y in t.y if isinstance(y, str)]
     if rotulos:
         fig.update_layout(margin_l=max(fig.layout.margin.l or 0, 7 * max(map(len, rotulos)) + 10))
     if altura:
         fig.update_layout(height=altura)
+    # legenda horizontal com largura fixa por item (a fonte carrega depois e os itens se sobrepunham)
+    fig.update_layout(legend=dict(entrywidth=190, entrywidthmode="pixels"))
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
