@@ -1,24 +1,45 @@
 # Elections Analyzer · Itapira
 
 Votação das Eleições 2026 (1º turno) em Itapira-SP (Zona 0054, 161 seções, 22 locais)
-agrupada por bairro, local de votação ou seção, com comparação com 2022 e análises em texto por IA.
+analisada por bairro e comparada com 16 cidades vizinhas, o estado de SP, o Brasil e a eleição de 2022.
 
 ## Como usar
 
 ```bash
 pip install -r requirements.txt
 python etl/preparar_dados.py   # baixa do TSE (~1,6 GB) e gera data/itapira/
-python etl/preparar_2022.py    # Presidente 2022 (1º e 2º turno), para a aba 2022 × 2026
+python etl/preparar_2022.py    # Presidente 2022 (1º e 2º turno), seção a seção
+python etl/preparar_contexto.py  # totais por município (SP e Brasil) e cadastro de candidaturas
 streamlit run app/app.py
 ```
 
+## Como a análise é organizada
+
+Cada capítulo responde a uma pergunta: resposta curta, argumentos com números e, por fim, a
+evidência (tabelas e poucos gráficos). As comparações usam 16 cidades vizinhas, o estado de SP,
+o Brasil e a eleição de 2022.
+
+| Capítulo | Pergunta |
+|---|---|
+| Resumo | Itapira votou diferente do estado e do país? |
+| Onde cada um é forte | Em que bairros cada candidato foi melhor ou pior? |
+| 2022 → 2026 | Itapira acompanhou o movimento do estado? |
+| Voto entre cargos | Quem votou em X também votou em Y? |
+| Perfil e voto | Idade, escolaridade etc. explicam o voto? |
+| Deputados | Quem Itapira escolheu, e quem depende de Itapira? |
+| Comparecimento | Itapira foi mais às urnas? |
+| Metodologia | Fontes, definições e limitações |
+
+Código: `app/analise.py` (cálculos), `app/ui.py` (visual), `app/app.py` (capítulos),
+`app/insights.py` (leitura por IA).
+
 ## Análises por IA
 
-Cada aba tem um bloco "O que os números dizem". O painel calcula os fatos (quem venceu, maiores e
-menores resultados, variações) e o Claude (`claude-opus-5-5`) os transforma em conclusões curtas.
+Com uma chave de API, cada capítulo ganha um bloco "Leitura por IA": o Claude (`claude-opus-5-5`)
+reescreve em texto corrido os argumentos que o painel já calculou.
 
 - Defina `ANTHROPIC_API_KEY` nos Secrets do Streamlit Cloud (ou como variável de ambiente local).
-- Sem a chave, o bloco mostra só os fatos calculados.
+- Sem a chave, o painel funciona igual; só não mostra esse bloco.
 - As respostas ficam em cache por combinação de filtros (`.cache_insights/`), então cada
   combinação gera no máximo uma chamada.
 
@@ -29,6 +50,7 @@ menores resultados, variações) e o Claude (`claude-opus-5-5`) os transforma em
 - `perfil_eleitor_secao_2026_SP.zip` – eleitores aptos por seção × idade, gênero, escolaridade,
   estado civil (raça/cor existe mas ~88% "não informado" em Itapira, por isso não é usada)
 - `votacao_secao_2022_BR.zip` / `eleitorado_local_votacao_2022.zip` – Presidente 2022
+- `consulta_cand_2026.zip` – nome de urna, partido e situação (eleito, 2º turno…) dos candidatos
 
 ## Bairros
 
