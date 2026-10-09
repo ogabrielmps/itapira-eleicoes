@@ -65,3 +65,11 @@ reescreve em texto corrido os argumentos que o painel já calculou.
 O ETL nunca sobrescreve esse arquivo.
 
 Observação: o bairro é o do **local de votação**, não o endereço do eleitor.
+
+## Manter o app acordado
+
+O Streamlit Community Cloud gratuito põe o app para dormir depois de um tempo sem visitas.
+O workflow `.github/workflows/manter-acordado.yml` abre o painel a cada 6 horas com um navegador sem
+tela (`scripts/manter_acordado.py`) e, se ele estiver dormindo, clica em "Yes, get this app back up!".
+O GitHub desativa agendamentos após 60 dias sem commits no repositório; se isso acontecer, reative
+na aba Actions.

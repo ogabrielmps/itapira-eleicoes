@@ -1,0 +1,33 @@
+# Abre o painel a cada 6 horas para o Streamlit Community Cloud não colocá-lo para dormir.
+# Também pode ser rodado na mão: aba Actions -> "Manter o app acordado" -> Run workflow.
+name: Manter o app acordado
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # a cada 6 horas (horário UTC)
+  workflow_dispatch:
+
+jobs:
+  visitar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar navegador
+        run: |
+          pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+      - name: Visitar o painel
+        env:
+          APP_URL: https://itapira-eleicoes.streamlit.app/
+        run: python scripts/manter_acordado.py
+      - name: Guardar captura de tela se falhar
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: falha
+          path: falha.png
+          if-no-files-found: ignore

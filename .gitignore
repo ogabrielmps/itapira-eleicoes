@@ -3,3 +3,4 @@ __pycache__/
 .claude/
 .streamlit/secrets.toml
 .cache_insights/
+falha.png
