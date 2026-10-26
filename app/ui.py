@@ -151,7 +151,7 @@ def hero(destaque: str, linha_cima: str, linha_baixo: str = ""):
   <div class="marca">
     <div class="eleicoes">ELEIÇÕES<br><span class="ano">2026</span></div>
     <div class="barra"></div>
-    <div class="local">ITAPIRA, SP <span>| 1º TURNO</span></div>
+    <div class="local">ITAPIRA, SP <span>| 1º E 2º TURNO</span></div>
   </div>
   <div class="caixa">
     <div class="linha">{linha_cima}</div>

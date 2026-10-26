@@ -1,12 +1,12 @@
 """
-Análise da votação de Itapira (Zona 54) - Eleições 2026, 1º turno.
+Análise da votação de Itapira (Zona 54) - Eleições 2026, 1º e 2º turno.
 
 Cada capítulo responde a uma pergunta: resposta curta, argumentos com números e, por fim,
 a evidência (tabelas e poucos gráficos). As comparações usam as cidades vizinhas, o estado
 de SP, o Brasil e a eleição de 2022.
 
 Rodar:  streamlit run app/app.py
-Dados:  etl/preparar_dados.py, etl/preparar_2022.py e etl/preparar_contexto.py
+Dados:  etl/preparar_dados.py, etl/preparar_2022.py, etl/preparar_contexto.py e etl/preparar_2turno.py
 IA:     ANTHROPIC_API_KEY nos Secrets do Streamlit (opcional) para a leitura em texto de cada capítulo
 """
 import hmac
@@ -20,6 +20,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 import analise as A
+import analise_2t as B
 import insights
 import ui
 from analise import (BRANCO, CARGOS, DEP_ESTADUAL, DEP_FEDERAL, GOVERNADOR, ITAPIRA, NULO,
@@ -168,6 +169,9 @@ if ctx is None:
 BAIRRO = secoes.set_index("NR_SECAO")["BAIRRO"]
 LOCAL = secoes.set_index("NR_SECAO")["NM_LOCAL_VOTACAO"]
 APTOS_SECAO = secoes.set_index("NR_SECAO")["QT_ELEITOR_SECAO"]
+if B.disponivel():  # eleitorado oficial de cada seção no dia da eleição (boletim de urna), e não o do cadastro
+    APTOS_SECAO = pd.read_csv(B.ITAPIRA_DIR / "secoes_2t.csv").set_index("NR_SECAO")["APTOS_1T"].reindex(
+        APTOS_SECAO.index).fillna(APTOS_SECAO)
 GRUPOS = {"Bairro": (BAIRRO, "bairro", "bairros"),
           "Local de votação": (LOCAL, "local de votação", "locais de votação")}
 
@@ -213,6 +217,17 @@ def tabela_progress(df: pd.DataFrame, pct_cols: dict, outros: dict | None = None
     st.dataframe(df, column_config=cfg, hide_index=True, width="stretch", **extra)
 
 
+def mapa_itapira(locais: pd.DataFrame) -> folium.Map:
+    """Mapa centrado na área urbana de Itapira com zoom fixo.
+
+    (fit_bounds falha quando o mapa nasce numa aba ainda oculta: o Leaflet mede o tamanho zero e abre
+    no mundo inteiro.) Os locais rurais ficam a poucos cliques de zoom."""
+    ok = locais.dropna(subset=["NR_LATITUDE"])
+    urb = ok[(ok["NR_LATITUDE"] - ok["NR_LATITUDE"].median()).abs() < 0.03]
+    return folium.Map(location=[urb["NR_LATITUDE"].mean(), urb["NR_LONGITUDE"].mean()], zoom_start=13,
+                      tiles="OpenStreetMap")
+
+
 COL_PP = lambda nome: st.column_config.NumberColumn(nome, format="%+.1f")  # noqa: E731
 COL_NUM = lambda nome: st.column_config.NumberColumn(nome, format="localized")  # noqa: E731
 
@@ -230,15 +245,495 @@ def cartao_vencedor(cargo):
             f"mais votado em Itapira · estado: {pc(r.loc['Estado de SP', n])}" + (f" · {sit}" if sit else ""))
 
 
+def cartao_2turno():
+    """Resultado do 2º turno presidencial em Itapira (se os dados já foram processados)."""
+    if not B.disponivel():
+        return cartao_vencedor(PRESIDENTE)
+    r = B.carregar()[2]
+    it, br, sp = r.loc["Itapira"], r.loc["Brasil"], r.loc["Estado de SP"]
+    p = lambda x: x["22"] / (x["22"] + x["13"]) * 100  # noqa: E731
+    return (f"Presidente · 2º turno · {nome_cand(PRESIDENTE, 22)}", pc(p(it)),
+            f"em Itapira · estado: {pc(p(sp))} · {nome_cand(PRESIDENTE, 13)} eleito no país ({pc(100 - p(br))})")
+
+
 ui.kpis([
     ("Eleitores aptos", num(aptos), "161 seções · 22 locais de votação"),
-    ("Votaram", num(votantes_secao().sum()), pc(votantes_secao().sum() / aptos * 100) + " de comparecimento"),
-    cartao_vencedor(PRESIDENTE),
+    ("Votaram (1º turno)", num(votantes_secao().sum()), pc(votantes_secao().sum() / aptos * 100) + " de comparecimento"),
+    cartao_2turno(),
     cartao_vencedor(GOVERNADOR),
 ])
 
-abas = st.tabs(["📌 Resumo", "🗺️ Onde cada um é forte", "🔁 2022 → 2026", "🔀 Voto entre cargos",
+abas = st.tabs(["🗳️ 2º turno", "📌 Resumo 1º turno", "🗺️ Onde cada um é forte", "🔁 2022 → 2026", "🔀 Voto entre cargos",
                 "👥 Perfil e voto", "🏛️ Deputados", "🚶 Comparecimento", "📘 Metodologia"])
+
+
+# ======================================================================= 0. 2º turno
+@st.cache_data
+def dados_2t():
+    """Seções (1º, 2º turno e 2022), totais de referência, municípios de SP e transferências."""
+    if not B.disponivel():
+        return None
+    v2, s2, ref, mun = B.carregar()
+    t = B.tabela_secoes(votos, v2, s2, v22)
+    t["bairro"], t["local"] = BAIRRO.reindex(t.index), LOCAL.reindex(t.index).map(A.nome_local)
+    ind = A.indicadores(perfil_secao)
+    t = t.join(ind[["Idade média", "% com 60 anos ou mais", "% de 16 a 29 anos", "% com ensino superior",
+                    "% até o fundamental", "% de mulheres"]])
+    t["dF"], t["dL"] = t["pF2"] - t["pF1"], t["pL2"] - t["pL1"]
+    t["d22"] = t["pF2"] - t["pF22"]
+    s2e = s2[["ENCERRAMENTO_2T"]].copy()
+    hm = s2e["ENCERRAMENTO_2T"].str[9:13]
+    t["fechou_2t"] = (hm.str[:2].astype(int) * 60 + hm.str[2:].astype(int)).reindex(t.index)  # minutos
+    r = ref.copy()
+    r["pF"] = r["22"] / (r["22"] + r["13"]) * 100
+    r["pL"] = 100 - r["pF"]
+    r["comp"] = r["comparecimento"] / r["aptos"] * 100
+    r["bn"] = (r["brancos"] + r["nulos"]) / r["comparecimento"] * 100
+    mun = mun.copy()
+    mun["pF"] = mun["22"] / (mun["22"] + mun["13"]) * 100
+    return t, r, mun, B.transferencias_salvas()
+
+
+def cap_2turno():
+    D = dados_2t()
+    if D is None:
+        st.info("Dados do 2º turno ainda não processados. Rode `python etl/preparar_2turno.py`.")
+        return
+    t, r, mun, (T, lo, hi, n_or) = D
+    nF, nL = nome_cand(PRESIDENTE, 22), nome_cand(PRESIDENTE, 13)
+    r22 = referencias(PRESIDENTE, 2022, 2)
+    r1 = referencias(PRESIDENTE)
+    m22 = municipios_sp(PRESIDENTE, 2022, 2)[22]
+    mun["pF22"] = m22.reindex(mun.index)
+    mun["sw"] = mun["pF"] - mun["pF22"]
+    tot = t[["F1", "L1", "O1", "BN1", "F2", "L2", "BN2", "votaram_1t", "votaram_2t", "aptos", "aptos_1t"]].sum()
+    it = r.loc["Itapira"]
+
+    abas2 = st.tabs(["Resultado", "Do 1º para o 2º turno", "Seção a seção", "2022 × 2026", "Comparecimento",
+                     "Perfil do eleitorado"])
+
+    # ------------------------------------------------------------------ resultado
+    with abas2[0]:
+        p = mun["pF"].sort_values(ascending=False)
+        pos, acima = list(p.index).index(ITAPIRA) + 1, (p < p[ITAPIRA]).mean() * 100
+        esp, r2m = B.esperado_pelo_perfil_2t(ctx, mun)
+        d22 = it["pF"] - r22.loc["Itapira", 22]
+        sw_sp = r.loc["Estado de SP", "pF"] - r22.loc["Estado de SP", 22]
+        sw_br = r.loc["Brasil", "pF"] - r22.loc["Brasil", 22]
+        mediana_sp = mun["sw"].median()
+        quase = abs(d22) < 0.5
+        casas = 2 if quase else 1  # tão perto que vale mostrar os centésimos
+        texto = (f"{nF} venceu em Itapira com {pc(it['pF'], casas)}: "
+                 + ("praticamente o mesmo resultado" if quase else f"{pts(abs(d22), False)} {'acima' if d22 > 0 else 'abaixo'} do resultado")
+                 + f" de Jair Bolsonaro no 2º turno de 2022 ({pc(r22.loc['Itapira', 22], casas)}). No país, {nL} foi eleito "
+                 f"com {pc(r.loc['Brasil', 'pL'])}.")
+        args = [
+            f"**Votos em Itapira:** {nF} {num(it['22'])} × {nL} {num(it['13'])}: diferença de "
+            f"**{num(it['22'] - it['13'])} votos**. Brancos e nulos: {num(it['brancos'] + it['nulos'])} "
+            f"({pc(it['bn'])} de quem votou).",
+            f"**Comparação:** cidades vizinhas {pc(r.loc['Cidades vizinhas', 'pF'])}, estado de SP "
+            f"{pc(r.loc['Estado de SP', 'pF'])}, Brasil {pc(r.loc['Brasil', 'pF'])}. Itapira votou como a sua "
+            f"região e {pts(it['pF'] - r.loc['Estado de SP', 'pF'], False)} acima do estado.",
+            f"**No ranking paulista:** Itapira foi o **{pos}º** de {len(p)} municípios em % de {nF}, acima de "
+            f"{acima:.0f}% das cidades do estado.",
+            f"**Desde 2022 (2º turno × 2º turno):** Itapira {pts(d22)}; estado {pts(sw_sp)}; Brasil {pts(sw_br)}. "
+            f"Mas o município paulista típico (mediana) andou {pts(mediana_sp)} na direção do 22: o recuo do estado "
+            "veio das cidades maiores, e Itapira ficou parada.",
+            f"**Do 1º para o 2º turno:** {nF} foi de {pc(r1.loc['Itapira', 22])} para {pc(it['pF'])} dos votos válidos e "
+            f"{nL} de {pc(r1.loc['Itapira', 13])} para {pc(it['pL'])}: no 2º turno só sobram dois nomes, então os "
+            "dois sobem; quem subiu mais ganhou mais eleitores novos (ver a próxima aba).",
+            f"**O perfil não explica:** pelo perfil do eleitorado (idade, escolaridade, sexo, calculado com os 645 "
+            f"municípios), o esperado para {nF} em Itapira seria **{pc(esp.loc[ITAPIRA, 'esperado'])}**; foi "
+            f"{pc(it['pF'])}. Das 17 cidades da região, {(esp.loc[ctx['vizinhas'] + [ITAPIRA], 'real'] > esp.loc[ctx['vizinhas'] + [ITAPIRA], 'esperado']).sum()} "
+            "ficaram acima do esperado: o voto é regional.",
+        ]
+        ui.resposta("Quem venceu em Itapira, e como isso se compara ao estado, ao país e a 2022?", texto, args)
+
+        st.subheader("Itapira lado a lado")
+        tab = pd.DataFrame({
+            f"{nF} · 1º turno 2026": r1[22], f"{nF} · 2º turno 2026": r["pF"],
+            "Número 22 · 2º turno 2022": r22[22], "Mudança vs 2022 (pontos)": r["pF"] - r22[22],
+            "Comparecimento 2º turno": r["comp"],
+        }).loc[["Itapira", "Cidades vizinhas", "Estado de SP", "Brasil"]]
+        tabela_progress(tab, {c: 100 for c in tab.columns if "Mudança" not in c},
+                        {"Mudança vs 2022 (pontos)": COL_PP("Mudança vs 2022 (pontos)")}, indice="Onde")
+        ui.nota("Percentuais sobre os votos válidos (sem brancos e nulos). Em 2022 o 2º turno também foi 22 × 13 "
+                "(Jair Bolsonaro × Lula). Brasil inclui os votos do exterior no 2º turno de 2026.")
+
+        st.subheader("Onde Itapira fica entre os 645 municípios paulistas")
+        fig = go.Figure(go.Histogram(x=mun["pF"], nbinsx=40,
+                                     marker=dict(color=CINZA_CLARO, line=dict(width=1, color=FUNDO)),
+                                     hovertemplate="%{x}: %{y} municípios<extra></extra>"))
+        for x, rot, corl, dash in [(it["pF"], f"Itapira {pc(it['pF'])}", MARINHO, "solid"),
+                                   (r.loc["Estado de SP", "pF"], f"Estado {pc(r.loc['Estado de SP', 'pF'])}", OUTROS, "dot")]:
+            fig.add_vline(x=x, line_color=corl, line_width=3 if dash == "solid" else 2, line_dash=dash,
+                          annotation_text=rot, annotation_position="top")
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10), bargap=0.05, showlegend=False,
+                          xaxis_title=f"% de {nF} nos votos válidos, por município", yaxis_title="nº de municípios")
+        ui.mostrar(fig)
+
+        st.subheader("Cidades da região: 2º turno de 2022 × 2026")
+        cid = ctx["vizinhas"] + [ITAPIRA]
+        rg = mun.loc[cid, ["pF22", "pF", "sw"]].sort_values("sw")
+        nomes = [A.nome(ctx["mun"].loc[c, "NM_MUNICIPIO"]) for c in rg.index]
+        ui.barras_h(rg["sw"].values, nomes, [MARINHO if c == ITAPIRA else CINZA_CLARO for c in rg.index],
+                    [f"{pts(x).replace(' pontos', '').replace(' ponto', '')}  ({a:.0f}% → {b:.0f}%)"
+                     for x, a, b in zip(rg["sw"], rg["pF22"], rg["pF"])],
+                    "<b>%{y}</b><br>%{x:+.1f} pontos<extra></extra>",
+                    "mudança do número 22 entre o 2º turno de 2022 e o de 2026 (pontos)", sw_sp,
+                    f"estado {pts(sw_sp)}")
+        leitura_ia("2t_res", "2º turno presidencial em Itapira: resultado e comparações", args)
+
+    # ------------------------------------------------------------------ transferências
+    with abas2[1]:
+        rot_o = {"F1": f"Votou em {nF}", "L1": f"Votou em {nL}", "O1": "Votou em outro candidato",
+                 "BN1": "Votou branco ou nulo", "ABS1": "Não votou"}
+        rot_d = {"F2": nF, "L2": nL, "BN2": "Branco ou nulo", "ABS2": "Não votou"}
+        dF, dL = tot["F2"] - tot["F1"], tot["L2"] - tot["L1"]
+        fluxo = T.mul(n_or, axis=0)  # eleitores estimados de cada origem para cada destino
+        ganho_L = fluxo["L2"].drop("L1").sort_values(ascending=False)
+        ganho_F = fluxo["F2"].drop("F1").sort_values(ascending=False)
+        o_F, o_L = T.loc["O1", "F2"] * 100, T.loc["O1", "L2"] * 100
+        divisao = ("se dividiram quase ao meio" if abs(o_F - o_L) < 10 else
+                   f"foram mais para {nF if o_F > o_L else nL}")
+        outros_1t = votos_cargo(PRESIDENTE)
+        outros_1t = (outros_1t[~outros_1t["NR_VOTAVEL"].isin([22, 13, BRANCO, NULO])]
+                     .groupby("NR_VOTAVEL")["QT_VOTOS"].sum().sort_values(ascending=False))
+        lista_outros = ", ".join(f"{nome_cand(PRESIDENTE, n)} ({num(q)})" for n, q in outros_1t.head(4).items())
+
+        # evidência por contagem (sem modelo): seções com mais x menos votos em outros candidatos
+        q = pd.qcut(t["pO1"].rank(method="first"), 3, labels=[0, 1, 2])
+        g = t.groupby(q, observed=True)[["F1", "L1", "O1", "F2", "L2"]].sum()
+        g["dF"] = g["F2"] / (g["F2"] + g["L2"]) * 100 - g["F1"] / (g["F1"] + g["L1"] + g["O1"]) * 100
+        g["dL"] = g["L2"] / (g["F2"] + g["L2"]) * 100 - g["L1"] / (g["F1"] + g["L1"] + g["O1"]) * 100
+        faixa = t.groupby(q, observed=True)["pO1"].agg(["min", "max"])
+
+        texto = (f"{nL} cresceu mais: +{num(dL)} votos, contra +{num(dF)} de {nF}. Pela estimativa, os eleitores dos "
+                 f"candidatos eliminados {divisao}, e {nL} levou a maior parte de quem tinha votado branco ou nulo.")
+        args = [
+            f"**Contagem (dado oficial, sem estimativa):** {nF} {num(tot['F1'])} → {num(tot['F2'])} "
+            f"(+{num(dF)}); {nL} {num(tot['L1'])} → {num(tot['L2'])} (+{num(dL)}); brancos e nulos "
+            f"{num(tot['BN1'])} → {num(tot['BN2'])} ({num(tot['BN2'] - tot['BN1'])}); votaram "
+            f"{num(tot['votaram_1t'])} → {num(tot['votaram_2t'])} (+{num(tot['votaram_2t'] - tot['votaram_1t'])}).",
+            f"**Votos que ficaram livres:** {num(tot['O1'])} eleitores votaram em outros candidatos no 1º turno "
+            f"({lista_outros}…).",
+            f"**Eleitores dos eliminados (estimativa):** de cada 100, ~{o_F:.0f} foram para {nF} "
+            f"(entre {lo.loc['O1', 'F2'] * 100:.0f} e {hi.loc['O1', 'F2'] * 100:.0f}), ~{o_L:.0f} para {nL} "
+            f"(entre {lo.loc['O1', 'L2'] * 100:.0f} e {hi.loc['O1', 'L2'] * 100:.0f}), ~{T.loc['O1', 'BN2'] * 100:.0f} "
+            f"votaram branco/nulo e ~{T.loc['O1', 'ABS2'] * 100:.0f} não voltaram.",
+            f"**Quem tinha votado branco ou nulo:** ~{T.loc['BN1', 'L2'] * 100:.0f}% foram para {nL}, "
+            f"~{T.loc['BN1', 'F2'] * 100:.0f}% para {nF} e ~{T.loc['BN1', 'BN2'] * 100:.0f}% repetiram o branco/nulo.",
+            f"**Quem não tinha votado no 1º turno:** ~{T.loc['ABS1', 'L2'] * 100:.0f}% votaram em {nL} e "
+            f"~{T.loc['ABS1', 'F2'] * 100:.0f}% em {nF} no 2º turno; ~{T.loc['ABS1', 'ABS2'] * 100:.0f}% continuaram sem votar.",
+            f"**Fidelidade:** ~{T.loc['F1', 'F2'] * 100:.0f}% dos eleitores de {nF} e ~{T.loc['L1', 'L2'] * 100:.0f}% "
+            f"dos de {nL} no 1º turno repetiram o voto.",
+            f"**De onde veio o crescimento de {nL} (estimativa):** "
+            + "; ".join(f"~{num(round(v, -1))} de \"{rot_o[k].lower()}\"" for k, v in ganho_L.head(3).items()) + ".",
+            f"**De onde veio o crescimento de {nF} (estimativa):** "
+            + "; ".join(f"~{num(round(v, -1))} de \"{rot_o[k].lower()}\"" for k, v in ganho_F.head(3).items()) + ".",
+            f"**Evidência por contagem (sem modelo):** nas seções onde os outros candidatos tiveram mais votos no 1º turno "
+            f"({dec(faixa.loc[2, 'min'], 1)}% a {dec(faixa.loc[2, 'max'], 1)}%), {nF} subiu {pts(g.loc[2, 'dF'])} e {nL} "
+            f"{pts(g.loc[2, 'dL'])}; nas com menos ({dec(faixa.loc[0, 'min'], 1)}% a {dec(faixa.loc[0, 'max'], 1)}%), "
+            f"{nF} {pts(g.loc[0, 'dF'])} e {nL} {pts(g.loc[0, 'dL'])}.",
+        ]
+        ui.resposta("De onde vieram os votos do 2º turno?", texto, args)
+
+        st.subheader("Para onde foi cada eleitor do 1º turno (estimativa)")
+        cores_o = {"F1": SERIES[0], "L1": SERIES[1], "O1": SERIES[2], "BN1": OUTROS, "ABS1": CINZA_CLARO}
+        cores_d = {"F2": SERIES[0], "L2": SERIES[1], "BN2": OUTROS, "ABS2": CINZA_CLARO}
+        orig, dest = list(T.index), list(T.columns)
+        # totais oficiais do 2º turno nos rótulos (os fluxos são estimados e somam quase o mesmo)
+        oficial_d = {"F2": tot["F2"], "L2": tot["L2"], "BN2": tot["BN2"], "ABS2": tot["aptos"] - tot["votaram_2t"]}
+        src, tgt, val, cor_l = [], [], [], []
+        for i, o in enumerate(orig):
+            for j, dd in enumerate(dest):
+                v = fluxo.loc[o, dd]
+                if v >= 40:
+                    src.append(i)
+                    tgt.append(len(orig) + j)
+                    val.append(round(v))
+                    h = cores_o[o].lstrip("#")
+                    cor_l.append(f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},0.35)")
+        fig = go.Figure(go.Sankey(
+            node=dict(label=[f"{rot_o[o]} ({num(n_or[o])})" for o in orig]
+                      + [f"{rot_d[dd]} ({num(oficial_d[dd])})" for dd in dest],
+                      color=[cores_o[o] for o in orig] + [cores_d[dd] for dd in dest], pad=18, thickness=16),
+            link=dict(source=src, target=tgt, value=val, color=cor_l,
+                      hovertemplate="%{source.label} → %{target.label}<br>~%{value:,.0f} eleitores<extra></extra>"),
+        ))
+        fig.update_layout(height=430, margin=dict(l=10, r=10, t=10, b=10), font=dict(size=13))
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+        ui.nota("Esquerda: o que cada eleitor fez no 1º turno. Direita: no 2º turno. A espessura é o número estimado de "
+                "eleitores (fluxos com menos de 40 pessoas ficam ocultos).")
+
+        st.subheader("De cada 100 eleitores do 1º turno… (com margem de incerteza)")
+        mat = pd.DataFrame({rot_d[dd]: [f"{T.loc[o, dd] * 100:.0f}  ({lo.loc[o, dd] * 100:.0f}–{hi.loc[o, dd] * 100:.0f})"
+                                        for o in orig] for dd in dest}, index=[rot_o[o] for o in orig])
+        mat.insert(0, "Eleitores no 1º turno", [num(n_or[o]) for o in orig])
+        st.dataframe(mat.rename_axis("No 1º turno").reset_index(), hide_index=True, width="stretch")
+        ui.nota("**Como foi estimado:** o voto é secreto, então ninguém sabe como cada pessoa votou. A estimativa usa a "
+                "variação entre as 161 seções: se onde havia mais eleitores de um grupo no 1º turno aparece mais voto "
+                "num candidato no 2º, isso indica a transferência. Supõe que os grupos se comportaram de forma parecida "
+                "em toda a cidade. Entre parênteses, a faixa onde o valor real provavelmente está (90% das repetições do "
+                "cálculo com seções sorteadas). Faixas largas = pouca certeza.")
+        leitura_ia("2t_transf", "2º turno em Itapira: de onde vieram os votos de cada candidato", args)
+
+    # ------------------------------------------------------------------ seção a seção
+    with abas2[2]:
+        venc_L = t[t["pL2"] > t["pF2"]]
+        q1, q3 = t["pF2"].quantile([.25, .75])
+        r_12 = t["pF1"].corr(t["pF2"])
+        maisL = t.sort_values("dL", ascending=False).head(3)
+        maisF = t.sort_values("dF", ascending=False).head(3)
+        caiuF = (t["pF2"] < t["pF1"]).sum()
+        ext_max, ext_min = t["pF2"].idxmax(), t["pF2"].idxmin()
+
+        def sec_txt(s):
+            return f"seção {s} ({t.loc[s, 'local']}, {t.loc[s, 'bairro']})"
+
+        texto = (f"{nF} venceu em {len(t) - len(venc_L)} das {len(t)} seções"
+                 + (f"; {nL} venceu em {len(venc_L)}: " + ", ".join(sec_txt(s) + f", com {pc(t.loc[s, 'pL2'])}"
+                                                                     for s in venc_L.index) + "." if len(venc_L) else "."))
+        args = [
+            f"**Faixa:** de {pc(t.loc[ext_min, 'pF2'])} na {sec_txt(ext_min)} a {pc(t.loc[ext_max, 'pF2'])} na "
+            f"{sec_txt(ext_max)}. Metade das seções ficou entre {pc(q1)} e {pc(q3)}.",
+            f"**O mapa do 1º turno se manteve:** a correlação entre o % de {nF} no 1º e no 2º turno, seção a seção, é "
+            f"{dec(r_12)}. As seções fortes de um continuaram fortes no outro.",
+            f"**{nF} perdeu fatia em {caiuF} seções** do 1º para o 2º turno (% dos válidos); em todas as outras, subiu.",
+            f"**Onde {nL} mais cresceu:** " + "; ".join(f"{sec_txt(s)}: {pts(t.loc[s, 'dL'])}" for s in maisL.index) + ".",
+            f"**Onde {nF} mais cresceu:** " + "; ".join(f"{sec_txt(s)}: {pts(t.loc[s, 'dF'])}" for s in maisF.index) + ".",
+            "**Cuidado com seções pequenas:** cada seção tem entre "
+            f"{num(t['aptos'].min())} e {num(t['aptos'].max())} eleitores; numa seção de ~300 votos, 3 votos já mudam "
+            "1 ponto percentual.",
+        ]
+        ui.resposta("Como cada uma das 161 seções votou?", texto, args)
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.subheader("Distribuição das seções")
+            fig = go.Figure(go.Histogram(x=t["pF2"], xbins=dict(size=2), marker=dict(color=SERIES[0],
+                                         line=dict(width=1, color=FUNDO)),
+                                         hovertemplate="%{x}%: %{y} seções<extra></extra>"))
+            fig.add_vline(x=it["pF"], line_color=MARINHO, line_width=3, annotation_text=f"cidade {pc(it['pF'])}",
+                          annotation_position="top")
+            fig.add_vline(x=50, line_color=OUTROS, line_dash="dot", annotation_text="50%", annotation_position="top left")
+            fig.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10), bargap=0.05, showlegend=False,
+                              xaxis_title=f"% de {nF} na seção (2º turno)", yaxis_title="nº de seções")
+            ui.mostrar(fig)
+        with c2:
+            st.subheader("Mapa por local de votação")
+            loc = t.assign(L=secoes.set_index("NR_SECAO")["NR_LOCAL_VOTACAO"].reindex(t.index)).groupby("L")[["F2", "L2"]].sum()
+            loc["p"] = loc["F2"] / (loc["F2"] + loc["L2"]) * 100
+            locais = secoes.groupby("NR_LOCAL_VOTACAO").first()
+            m = mapa_itapira(locais)
+            for lid, row in loc.iterrows():
+                info = locais.loc[lid]
+                if pd.isna(info["NR_LATITUDE"]):
+                    continue
+                tt = row["F2"] + row["L2"]
+                folium.CircleMarker(
+                    [info["NR_LATITUDE"], info["NR_LONGITUDE"]], radius=7 + 16 * (tt / (loc["F2"] + loc["L2"]).max()) ** .5,
+                    color="#ffffff", weight=2, fill=True, fill_color=ui.cor_seq(row["p"], loc["p"].min(), loc["p"].max()),
+                    fill_opacity=.9,
+                    tooltip=f"<b>{info['NM_LOCAL_VOTACAO']}</b><br>{info['BAIRRO']}<br>{nF}: {pc(row['p'])} · "
+                            f"{nL}: {pc(100 - row['p'])}",
+                ).add_to(m)
+            st_folium(m, height=380, use_container_width=True, returned_objects=[], key="mapa_2t")
+            ui.nota(f"Mais escuro = maior % de {nF} (de {pc(loc['p'].min())} a {pc(loc['p'].max())}).")
+
+        st.subheader("Todas as seções")
+        f1, f2 = st.columns([2, 1])
+        bairros_sel = f1.multiselect("Filtrar bairros", sorted(t["bairro"].dropna().unique()), key="2t_bairros")
+        ordem = f2.selectbox("Ordenar por", ["Seção", f"% {nF} (2º turno)", f"Crescimento de {nL}",
+                                              f"Crescimento de {nF}", "Mudança vs 2022", "Comparecimento"],
+                             key="2t_ordem")
+        tv = t if not bairros_sel else t[t["bairro"].isin(bairros_sel)]
+        chave_ord = {"Seção": None, f"% {nF} (2º turno)": "pF2", f"Crescimento de {nL}": "dL",
+                     f"Crescimento de {nF}": "dF", "Mudança vs 2022": "d22", "Comparecimento": "comp2"}[ordem]
+        if chave_ord:
+            tv = tv.sort_values(chave_ord, ascending=False)
+        tabela = pd.DataFrame({
+            "Bairro": tv["bairro"], "Local": tv["local"], "Aptos": tv["aptos"],
+            f"{nF} 2º t.": tv["pF2"], f"{nL} 2º t.": tv["pL2"],
+            f"{nF} 1º t.": tv["pF1"], f"{nL} 1º t.": tv["pL1"], "Outros 1º t.": tv["pO1"],
+            f"Var. {nF}": tv["dF"], f"Var. {nL}": tv["dL"],
+            "22 em 2022 (2º t.)": tv["pF22"], "Mudança vs 2022": tv["d22"],
+            "Comparec. 1º t.": tv["comp1"], "Comparec. 2º t.": tv["comp2"], "Branco/nulo 2º t.": tv["bn2"],
+            "Idade média": tv["Idade média"], "% superior": tv["% com ensino superior"],
+        })
+        tabela.index.name = "Seção"
+        tabela_progress(tabela, {f"{nF} 2º t.": 100, f"{nL} 2º t.": 100},
+                        {**{c: COL_PP(c) for c in [f"Var. {nF}", f"Var. {nL}", "Mudança vs 2022"]},
+                         **{c: st.column_config.NumberColumn(c, format="%.1f%%") for c in
+                            [f"{nF} 1º t.", f"{nL} 1º t.", "Outros 1º t.", "22 em 2022 (2º t.)", "Comparec. 1º t.",
+                             "Comparec. 2º t.", "Branco/nulo 2º t.", "% superior"]},
+                         "Idade média": st.column_config.NumberColumn(format="%.1f"), "Aptos": COL_NUM("Aptos")},
+                        altura=520, indice="Seção")
+        ui.nota("Percentuais de candidatos sobre os votos válidos; comparecimento sobre os aptos; branco/nulo sobre quem "
+                "votou. \"Var.\" = mudança do 1º para o 2º turno, em pontos. Clique no nome de uma coluna para ordenar.")
+        st.download_button("Baixar a tabela (CSV)", tabela.round(2).to_csv(sep=";").encode("utf-8-sig"),
+                           file_name="itapira_2026_2turno_por_secao.csv")
+        leitura_ia("2t_secoes", "2º turno em Itapira, seção a seção", args)
+
+    # ------------------------------------------------------------------ 2022 x 2026
+    with abas2[3]:
+        tc = t.dropna(subset=["pF22"])
+        dentro2 = (tc["d22"].abs() <= 2).mean() * 100
+        r_22 = tc["pF22"].corr(tc["pF2"])
+        sobe, desce = tc.sort_values("d22", ascending=False).head(3), tc.sort_values("d22").head(3)
+        bai = tc.groupby("bairro")[["F2", "L2"]].sum()
+        v22b = v22[(v22["NR_TURNO"] == 2) & v22["NR_SECAO"].isin(tc.index)].assign(B=lambda d: d["NR_SECAO"].map(BAIRRO))
+        p22b = v22b.pivot_table(index="B", columns="NR_VOTAVEL", values="QT_VOTOS", aggfunc="sum")
+        bai["2022"] = p22b[22] / (p22b[22] + p22b[13]) * 100
+        bai["2026"] = bai["F2"] / (bai["F2"] + bai["L2"]) * 100
+        bai["Mudança (pontos)"] = bai["2026"] - bai["2022"]
+        bai = bai.sort_values("Mudança (pontos)", ascending=False)
+        d22 = it["pF"] - r22.loc["Itapira", 22]
+        texto = (f"Na cidade, Itapira repetiu 2022 ({pc(r22.loc['Itapira', 22])} → {pc(it['pF'])}). Por dentro, porém, "
+                 f"houve trocas: algumas seções andaram até {pts(tc['d22'].abs().max(), False)} para um lado ou para o outro.")
+        args = [
+            f"**Na média, nada mudou:** a variação média das seções foi de {pts(tc['d22'].mean())}, e "
+            f"{dentro2:.0f}% delas ficaram a até 2 pontos do resultado de 2022.",
+            f"**O mapa é o mesmo:** correlação de {dec(r_22)} entre 2022 e 2026, seção a seção.",
+            "**Onde o 22 mais avançou:** " + "; ".join(f"seção {s} ({tc.loc[s, 'bairro']}): {pts(tc.loc[s, 'd22'])}"
+                                                       for s in sobe.index) + ".",
+            "**Onde o 22 mais recuou:** " + "; ".join(f"seção {s} ({tc.loc[s, 'bairro']}): {pts(tc.loc[s, 'd22'])}"
+                                                      for s in desce.index) + ".",
+            f"**Por bairro:** maior avanço do 22 em {bai.index[0]} ({pts(bai.iloc[0]['Mudança (pontos)'])}); maior recuo "
+            f"em {bai.index[-1]} ({pts(bai.iloc[-1]['Mudança (pontos)'])}).",
+            f"**Fora de Itapira:** o estado foi {pts(r.loc['Estado de SP', 'pF'] - r22.loc['Estado de SP', 22])} e o Brasil "
+            f"{pts(r.loc['Brasil', 'pF'] - r22.loc['Brasil', 22])} para o 22; entre as cidades vizinhas, a mudança foi de "
+            f"{pts(mun.loc[ctx['vizinhas'], 'sw'].min())} a {pts(mun.loc[ctx['vizinhas'], 'sw'].max())}.",
+            f"**Candidatos diferentes:** o número 22 foi Jair Bolsonaro em 2022 e {nF} em 2026; Lula foi o 13 nas duas. "
+            "A comparação mostra a força do número/campo, não de uma pessoa só.",
+        ]
+        ui.resposta("O 2º turno de 2026 repetiu o de 2022?", texto, args)
+        st.subheader("Por bairro: número 22 no 2º turno")
+        tabela_progress(bai[["2022", "2026", "Mudança (pontos)"]], {"2022": 100, "2026": 100},
+                        {"Mudança (pontos)": COL_PP("Mudança (pontos)")}, indice="Bairro")
+        with st.expander("Ver seção a seção (gráfico de dispersão)"):
+            fig = go.Figure()
+            lo_, hi_ = min(tc["pF22"].min(), tc["pF2"].min()) - 2, max(tc["pF22"].max(), tc["pF2"].max()) + 2
+            fig.add_trace(go.Scatter(x=[lo_, hi_], y=[lo_, hi_], mode="lines", line=dict(color=OUTROS, dash="dot"),
+                                     hoverinfo="skip", showlegend=False))
+            fig.add_trace(go.Scatter(x=tc["pF22"], y=tc["pF2"], mode="markers", showlegend=False,
+                                     marker=dict(size=9, color=SERIES[0], opacity=.8, line=dict(width=1.5, color=FUNDO)),
+                                     customdata=np.c_[tc.index, tc["bairro"]],
+                                     hovertemplate="<b>Seção %{customdata[0]}</b> · %{customdata[1]}<br>2022: %{x:.1f}%<br>"
+                                                   "2026: %{y:.1f}%<extra></extra>"))
+            fig.update_layout(height=430, margin=dict(l=10, r=10, t=10, b=10),
+                              xaxis_title="% do 22 no 2º turno de 2022", yaxis_title=f"% de {nF} no 2º turno de 2026")
+            fig.update_xaxes(range=[lo_, hi_])
+            fig.update_yaxes(range=[lo_, hi_])
+            ui.mostrar(fig)
+            ui.nota("Cada ponto é uma seção. Acima da linha: o 22 foi melhor em 2026; abaixo: pior. A seção 161 é nova "
+                    "e não aparece.")
+        leitura_ia("2t_2022", "2º turno de 2026 comparado ao de 2022 em Itapira", args)
+
+    # ------------------------------------------------------------------ comparecimento
+    with abas2[4]:
+        comp = A.comparecimento_ref(ctx)
+        dcomp = t["comp2"] - t["comp1"]
+        r_cl = dcomp.corr(t["dL"])
+        r_cf = dcomp.corr(t["dF"])
+        tarde = t[t["fechou_2t"] > 17 * 60 + 10]
+        ultima = t["fechou_2t"].idxmax()
+        hhmm = lambda m: f"{int(m // 60)}h{int(m % 60):02d}"  # noqa: E731
+        bai = t.groupby("bairro")[["votaram_1t", "votaram_2t", "aptos", "BN1", "BN2"]].sum()
+        bai["Comparec. 1º t."] = bai["votaram_1t"] / bai["aptos"] * 100
+        bai["Comparec. 2º t."] = bai["votaram_2t"] / bai["aptos"] * 100
+        bai["Variação (pontos)"] = bai["Comparec. 2º t."] - bai["Comparec. 1º t."]
+        bai["Branco/nulo 1º t."] = bai["BN1"] / bai["votaram_1t"] * 100
+        bai["Branco/nulo 2º t."] = bai["BN2"] / bai["votaram_2t"] * 100
+        bai = bai.sort_values("Variação (pontos)", ascending=False)
+        c1t, c2t = tot["votaram_1t"] / tot["aptos_1t"] * 100, it["comp"]
+        texto = (f"Sim: votaram {num(tot['votaram_2t'] - tot['votaram_1t'])} pessoas a mais que no 1º turno "
+                 f"({pc(c1t)} → {pc(c2t)}), e os brancos e nulos caíram de {pc(tot['BN1'] / tot['votaram_1t'] * 100)} para "
+                 f"{pc(it['bn'])} dos votos.")
+        args = [
+            f"**Comparação:** no estado, o comparecimento foi de {pc(comp.loc['Estado de SP', 2026])} para "
+            f"{pc(r.loc['Estado de SP', 'comp'])}; no Brasil, de {pc(comp.loc['Brasil', 2026])} para {pc(r.loc['Brasil', 'comp'])}; "
+            f"nas vizinhas, de {pc(comp.loc['Cidades vizinhas', 2026])} para {pc(r.loc['Cidades vizinhas', 'comp'])}.",
+            f"**Seções:** o comparecimento subiu em {(dcomp > 0).sum()} das {len(t)} seções; a maior alta foi na seção "
+            f"{dcomp.idxmax()} ({t.loc[dcomp.idxmax(), 'bairro']}, {pts(dcomp.max())}).",
+            f"**Quem ganhou com o aumento?** A relação entre o aumento do comparecimento e o crescimento de cada "
+            f"candidato, seção a seção, é {dec(r_cl)} para {nL} e {dec(r_cf)} para {nF}: "
+            + ("fraca nos dois casos, ou seja, os novos votantes não mudaram o resultado das seções de forma clara."
+               if max(abs(r_cl), abs(r_cf)) < .3 else
+               f"{'positiva' if r_cl > 0 else 'negativa'} para {nL}: onde mais gente voltou, {nL} cresceu "
+               f"{'mais' if r_cl > 0 else 'menos'}."),
+            f"**Brancos e nulos:** caíram em {(t['bn2'] < t['bn1']).sum()} das {len(t)} seções: no 2º turno, parte de quem "
+            "anulou no 1º escolheu um lado (ver a aba \"Do 1º para o 2º turno\").",
+            (f"**Filas:** {len(tarde)} urnas encerraram depois das 17h10 (sinal de eleitores na fila no fim do dia); a "
+             if len(tarde) else "**Filas:** nenhuma urna encerrou depois das 17h10, sinal de que não houve fila relevante "
+             "no fim do dia; a ")
+            + f"última a fechar foi a da seção {ultima} ({t.loc[ultima, 'local']}), às {hhmm(t.loc[ultima, 'fechou_2t'])}.",
+        ]
+        ui.resposta("Mais gente votou no 2º turno?", texto, args)
+        st.subheader("Por bairro")
+        tabela_progress(bai[["Comparec. 1º t.", "Comparec. 2º t.", "Variação (pontos)", "Branco/nulo 1º t.",
+                             "Branco/nulo 2º t."]], {"Comparec. 1º t.": 100, "Comparec. 2º t.": 100},
+                        {"Variação (pontos)": COL_PP("Variação (pontos)"),
+                         "Branco/nulo 1º t.": st.column_config.NumberColumn(format="%.1f%%"),
+                         "Branco/nulo 2º t.": st.column_config.NumberColumn(format="%.1f%%")}, indice="Bairro")
+        ui.nota("Comparecimento = quem votou ÷ eleitores aptos. Branco/nulo = % de quem votou. Os horários vêm do "
+                "boletim de cada urna.")
+        leitura_ia("2t_comp", "2º turno em Itapira: comparecimento, brancos e nulos", args)
+
+    # ------------------------------------------------------------------ perfil
+    with abas2[5]:
+        inds = ["Idade média", "% com 60 anos ou mais", "% de 16 a 29 anos", "% com ensino superior",
+                "% até o fundamental", "% de mulheres"]
+        linhas = []
+        for i in inds:
+            rF, r2F = A.r2_simples(t[i], t["pF2"])
+            rL, r2L = A.r2_simples(t[i], t["dL"])
+            qq = pd.qcut(t[i].rank(method="first"), 3, labels=[0, 1, 2])
+            g = t.groupby(qq, observed=True)[["F2", "L2", "F1", "L1", "O1"]].sum()
+            pF_alto = g.loc[2, "F2"] / (g.loc[2, "F2"] + g.loc[2, "L2"]) * 100
+            pF_baixo = g.loc[0, "F2"] / (g.loc[0, "F2"] + g.loc[0, "L2"]) * 100
+            dl = lambda k: g.loc[k, "L2"] / (g.loc[k, "F2"] + g.loc[k, "L2"]) * 100 - g.loc[k, "L1"] / (g.loc[k, ["F1", "L1", "O1"]].sum()) * 100  # noqa: E731
+            fx = t.groupby(qq, observed=True)[i].agg(["min", "max"])
+            un = A.INDICADORES[i][3]
+            linhas.append({"Característica": i, "faixa_mais": f"{fx.loc[2, 'min']:.0f}–{fx.loc[2, 'max']:.0f}{un}",
+                           "faixa_menos": f"{fx.loc[0, 'min']:.0f}–{fx.loc[0, 'max']:.0f}{un}",
+                           f"{nF}: seções com mais": pF_alto, f"{nF}: seções com menos": pF_baixo,
+                           "Diferença (pontos)": pF_alto - pF_baixo,
+                           f"Cresc. {nL}: com mais": dl(2), f"Cresc. {nL}: com menos": dl(0),
+                           "r2F": r2F * 100, "rF": rF, "r2L": r2L * 100, "rL": rL})
+        pf = pd.DataFrame(linhas).set_index("Característica")
+        top = pf["Diferença (pontos)"].abs().idxmax()
+        topL = (pf[f"Cresc. {nL}: com mais"] - pf[f"Cresc. {nL}: com menos"]).abs().idxmax()
+        multi = A.r2_multiplo(t[["Idade média", "% com ensino superior", "% de mulheres"]], t["pF2"]) * 100
+        multiL = A.r2_multiplo(t[["Idade média", "% com ensino superior", "% de mulheres"]], t["dL"]) * 100
+        alto, baixo = A.INDICADORES[top][1], A.INDICADORES[top][2]
+        texto = (f"Pouco. O que mais separa as seções é {NOME_FRASE[top]}: nas seções com {alto}, {nF} teve "
+                 f"{pc(pf.loc[top, f'{nF}: seções com mais'])}; nas com {baixo}, {pc(pf.loc[top, f'{nF}: seções com menos'])}.")
+        args = [
+            f"**Juntas**, idade, escolaridade e sexo explicam **{pc(multi, 0)}** das diferenças de voto entre as seções no 2º "
+            f"turno; o resto vem de outros fatores (vizinhança, história local, candidatos locais…).",
+            f"**{NOME_FRASE[top].capitalize()}:** seções com {alto} ({pf.loc[top, 'faixa_mais']}) deram "
+            f"{pc(pf.loc[top, f'{nF}: seções com mais'])} a {nF}; com {baixo} ({pf.loc[top, 'faixa_menos']}), "
+            f"{pc(pf.loc[top, f'{nF}: seções com menos'])}.",
+            f"**Onde {nL} cresceu mais do 1º para o 2º turno:** o que mais separa é {NOME_FRASE[topL]}: "
+            f"{pts(pf.loc[topL, f'Cresc. {nL}: com mais'])} nas seções com {A.INDICADORES[topL][1]} e "
+            f"{pts(pf.loc[topL, f'Cresc. {nL}: com menos'])} nas com {A.INDICADORES[topL][2]}. As características juntas "
+            f"explicam {pc(multiL, 0)} do crescimento dele.",
+            "**Limitação:** o perfil é dos eleitores aptos de cada seção e a comparação é entre seções, não entre "
+            "pessoas. Não dá para concluir que \"os mais velhos votaram em X\".",
+        ]
+        ui.resposta("O perfil do eleitorado explica o 2º turno?", texto, args)
+        st.subheader("Seções com mais × com menos de cada característica")
+        cols = ["faixa_mais", f"{nF}: seções com mais", "faixa_menos", f"{nF}: seções com menos", "Diferença (pontos)",
+                f"Cresc. {nL}: com mais", f"Cresc. {nL}: com menos"]
+        tabela_progress(pf[cols].rename(columns={"faixa_mais": "Faixa (mais)", "faixa_menos": "Faixa (menos)"}),
+                        {f"{nF}: seções com mais": 100, f"{nF}: seções com menos": 100},
+                        {"Diferença (pontos)": COL_PP("Diferença (pontos)"),
+                         f"Cresc. {nL}: com mais": COL_PP(f"Cresc. {nL}: com mais"),
+                         f"Cresc. {nL}: com menos": COL_PP(f"Cresc. {nL}: com menos")}, indice="Característica")
+        ui.nota("Para cada característica, as 161 seções foram divididas em três grupos iguais; a tabela compara o terço "
+                f"com mais com o terço com menos. \"Cresc. {nL}\" = quanto a fatia dele subiu do 1º para o 2º turno.")
+        leitura_ia("2t_perfil", "2º turno em Itapira: perfil do eleitorado e voto", args)
 
 
 # ======================================================================= 1. resumo
@@ -395,10 +890,7 @@ def cap_geografia():
             index="L", columns="NR_VOTAVEL", values="QT_VOTOS", aggfunc="sum", fill_value=0)
         pl = por_local[nr] / por_local.sum(axis=1) * 100
         locais = secoes.groupby("NR_LOCAL_VOTACAO").first()
-        m = folium.Map(tiles="OpenStreetMap")
-        pts_ok = locais.dropna(subset=["NR_LATITUDE"])
-        m.fit_bounds([[pts_ok["NR_LATITUDE"].min(), pts_ok["NR_LONGITUDE"].min()],
-                      [pts_ok["NR_LATITUDE"].max(), pts_ok["NR_LONGITUDE"].max()]])
+        m = mapa_itapira(locais)
         tot_l = por_local.sum(axis=1)
         for loc, val in pl.items():
             info = locais.loc[loc]
@@ -932,7 +1424,14 @@ Todos os números vêm do **Portal de Dados Abertos do TSE**:
 - **Pontos (p.p.)**: diferença entre dois percentuais. De 60% para 65% são 5 pontos.
 - **Bairro**: o bairro do **local de votação** (escola), conforme o cadastro do TSE, revisado em `mapping/bairros.csv`.
 - **Cidades vizinhas** ({len(viz)}): {", ".join(viz)}.
-- **Comparecimento**: votos dados divididos pelos eleitores aptos.
+- **Comparecimento**: votos dados divididos pelos eleitores aptos. Para Itapira, os aptos de cada seção vêm do
+  boletim de urna (o número oficial do dia da eleição); nas comparações entre municípios, do cadastro de locais de
+  votação do TSE, que é a mesma fonte para todas as cidades (diferença de ~0,1 ponto).
+- **2º turno**: votos de cada seção lidos dos boletins de urna publicados pelo TSE em resultados.tse.jus.br.
+  A leitura foi conferida contra o 1º turno (23.230 números, todos iguais ao arquivo oficial) e a soma das seções
+  bate com o total oficial do município.
+- **Transferência de votos**: estimativa estatística (inferência ecológica) feita com a variação entre as 161
+  seções; não é uma contagem, porque o voto é secreto.
 - **Número 22 / 13**: o número na urna. O 22 foi Jair Bolsonaro em 2022 e Flávio Bolsonaro em 2026; o 13 foi Lula nos dois anos.
 - **Correlação**: vai de −1 a +1 e mede se duas coisas sobem e descem juntas entre as seções. Perto de 0 = sem relação.
 - **"Explica X% das diferenças" (R²)**: quanto da variação de voto entre seções acompanha uma característica do eleitorado.
@@ -953,7 +1452,7 @@ Todos os números vêm do **Portal de Dados Abertos do TSE**:
                        file_name="itapira_2026_secoes.csv")
 
 
-for aba, cap in zip(abas, [cap_resumo, cap_geografia, cap_mudanca, cap_cargos, cap_perfil, cap_deputados,
+for aba, cap in zip(abas, [cap_2turno, cap_resumo, cap_geografia, cap_mudanca, cap_cargos, cap_perfil, cap_deputados,
                            cap_comparecimento, cap_metodologia]):
     with aba:
         cap()

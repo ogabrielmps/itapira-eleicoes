@@ -1,6 +1,6 @@
 # Elections Analyzer · Itapira
 
-Votação das Eleições 2026 (1º turno) em Itapira-SP (Zona 0054, 161 seções, 22 locais)
+Votação das Eleições 2026 (1º e 2º turno) em Itapira-SP (Zona 0054, 161 seções, 22 locais)
 analisada por bairro e comparada com 16 cidades vizinhas, o estado de SP, o Brasil e a eleição de 2022.
 
 ## Como usar
@@ -10,6 +10,7 @@ pip install -r requirements.txt
 python etl/preparar_dados.py   # baixa do TSE (~1,6 GB) e gera data/itapira/
 python etl/preparar_2022.py    # Presidente 2022 (1º e 2º turno), seção a seção
 python etl/preparar_contexto.py  # totais por município (SP e Brasil) e cadastro de candidaturas
+python etl/preparar_2turno.py    # 2º turno presidencial seção a seção (boletins de urna) + totais oficiais
 streamlit run app/app.py
 ```
 
@@ -21,7 +22,8 @@ o Brasil e a eleição de 2022.
 
 | Capítulo | Pergunta |
 |---|---|
-| Resumo | Itapira votou diferente do estado e do país? |
+| 2º turno | Resultado, de onde vieram os votos, seção a seção, 2022 × 2026, comparecimento e perfil |
+| Resumo 1º turno | Itapira votou diferente do estado e do país? |
 | Onde cada um é forte | Em que bairros cada candidato foi melhor ou pior? |
 | 2022 → 2026 | Itapira acompanhou o movimento do estado? |
 | Voto entre cargos | Quem votou em X também votou em Y? |
@@ -54,6 +56,10 @@ reescreve em texto corrido os argumentos que o painel já calculou.
   estado civil (raça/cor existe mas ~88% "não informado" em Itapira, por isso não é usada)
 - `votacao_secao_2022_BR.zip` / `eleitorado_local_votacao_2022.zip` – Presidente 2022
 - `consulta_cand_2026.zip` – nome de urna, partido e situação (eleito, 2º turno…) dos candidatos
+- Boletins de urna do 2º turno (`resultados.tse.jus.br/oficial/ele2026/arquivo-urna/3221/...`), lidos por
+  `etl/boletim_urna.py` (ASN.1/BER). A leitura é validada contra o 1º turno: os boletins do 1º turno têm de
+  reproduzir, número por número, o arquivo oficial de votação por seção (23.230 números conferidos).
+- Totais oficiais do 2º turno por município, estado e Brasil (`resultados.tse.jus.br/oficial/ele2026/6258/dados/...`)
 
 ## Bairros
 

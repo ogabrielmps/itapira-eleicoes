@@ -49,6 +49,15 @@ def nome(n: str) -> str:
     return t
 
 
+SIGLAS_LOCAL = {"Ee": "EE", "E.e.": "E.E.", "Emef": "EMEF", "Etec": "ETEC", "Fatec": "FATEC", "Sesi": "SESI",
+                "Iesi": "IESI", "Prof": "Prof.", "Ver": "Ver.", "Dr": "Dr."}
+
+
+def nome_local(n: str) -> str:
+    """'EE PROF ORLANDO DINI' -> 'EE Prof. Orlando Dini' (siglas de escola em maiúsculas)."""
+    return " ".join(SIGLAS_LOCAL.get(w, w) for w in nome(n).split())
+
+
 def curto(n: str) -> str:
     """Nome completo longo -> primeiro + último ('Flavio Nantes Bolsonaro' -> 'Flavio Bolsonaro').
     Nomes de urna já são curtos e passam inalterados."""
@@ -101,7 +110,7 @@ INDICADORES = {
     "Idade média": ("w_idade", "eleitorado mais velho", "eleitorado mais jovem", " anos"),
     "% com 60 anos ou mais": ("idosos", "mais idosos", "menos idosos", "%"),
     "% de 16 a 29 anos": ("jovens", "mais jovens", "menos jovens", "%"),
-    "% com ensino superior": ("superior", "mais escolarizado", "menos escolarizado", "%"),
+    "% com ensino superior": ("superior", "eleitorado mais escolarizado", "eleitorado menos escolarizado", "%"),
     "% até o fundamental": ("fundamental", "mais eleitores só com o fundamental",
                             "menos eleitores só com o fundamental", "%"),
     "% de mulheres": ("mulheres", "mais mulheres", "menos mulheres", "%"),
